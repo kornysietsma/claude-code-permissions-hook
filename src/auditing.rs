@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 
 /// The outcome of permission checking.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Decision {
     Allow,
@@ -42,7 +42,7 @@ pub fn audit_tool_use(
 ) {
     let should_audit = match audit_level {
         AuditLevel::Off => false,
-        AuditLevel::Matched => !matches!(decision, Decision::Passthrough),
+        AuditLevel::Matched => decision != Decision::Passthrough,
         AuditLevel::All => true,
     };
 

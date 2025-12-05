@@ -231,6 +231,8 @@ cargo fmt
 
 ### Audit File (JSON)
 
+(confusingly this used to be also called 'logging' - renamed to auditing now for clarity)
+
 Records tool use to the file specified by `audit_file`. Controlled by `audit_level` in TOML:
 
 - `off` - disabled
