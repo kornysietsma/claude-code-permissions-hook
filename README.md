@@ -2,13 +2,9 @@
 
 A PreToolUse hook for Claude Code that provides granular control over which tools Claude can use, with support for allow/deny rules, pattern matching, and security exclusions.
 
-NOTE this is largely a workaround of current (October 2025) limitations to how Claude Code does permissions - no amount of fiddling with [setting Bash permissions](https://docs.claude.com/en/docs/claude-code/iam#tool-specific-permission-rules) seems to work consistently - even for simple commands sometimes it prompts me over and over. So following their [Additional permission control with hooks](https://docs.claude.com/en/docs/claude-code/iam#additional-permission-control-with-hooks) guidelines, I thought I'd build a tool to help.
+NOTE: This is a workaround for current (December 2025) limitations in Claude Code permissions - [setting Bash permissions](https://docs.claude.com/en/docs/claude-code/iam#tool-specific-permission-rules) doesn't work consistently. Built following Anthropic's [hook guidelines](https://docs.claude.com/en/docs/claude-code/iam#additional-permission-control-with-hooks).
 
-However this may well be a short-lived application; all the AI tools are moving very fast and I'm guessing Anthropic will improve these permissions soon. So I'm not packaging this up with a lot of help and guidance - use it if it helps, but you'll need to know how to build and run a rust application yourself, I'm afraid.
-
-## Disclaimer
-
-This has been largely "vibe coded" - I have cleaned it up a bit but it's still a bit verbose for my liking.
+This may be short-lived as Anthropic improves permissions. Use it if it helps, but you'll need basic Rust knowledge.
 
 ## Features
 
@@ -24,11 +20,13 @@ This has been largely "vibe coded" - I have cleaned it up a bit but it's still a
 
 ## Installation
 
+Requires Rust. Install via [rustup](https://rustup.rs/) if you want to use this project. Rust is fun!
+
 ```bash
 cargo build --release
 ```
 
-The binary will be at `target/release/claude-code-permissions-hook`
+Binary: `target/release/claude-code-permissions-hook`
 
 ## Configuration
 
@@ -159,34 +157,9 @@ flowchart TB
     class Start,StartEnd startEndStyle
 ```
 
-### Flow Description
+Deny rules are checked first (block), then allow rules (permit). No match = passthrough to normal Claude Code permissions.
 
-1. **Load Configuration**: Parse TOML and compile all regex patterns
-2. **Read Hook Input**: Parse JSON from stdin containing tool name and parameters
-3. **Log Tool Use**: Write to log file (non-fatal, won't block on errors)
-4. **Check Deny Rules**: If any deny rule matches, output deny decision
-5. **Check Allow Rules**: If any allow rule matches, output allow decision
-6. **No Match**: Exit with no output (normal Claude Code permission flow)
-
-### Rule Matching Logic
-
-For each rule:
-
-1. Check if tool name matches
-2. Extract relevant field from tool_input (file_path, command, subagent_type, or prompt)
-3. Check if main regex matches
-4. If yes, check that exclude regex doesn't match
-5. First match wins (deny rules checked first)
-
-### Supported Tools
-
-| Tool | Matched Field | Config Fields |
-|------|---------------|---------------|
-| Read, Write, Edit, Glob | `file_path` | `file_path_regex`, `file_path_exclude_regex` |
-| Bash | `command` | `command_regex`, `command_exclude_regex` |
-| Task | `subagent_type` or `prompt` | `subagent_type`, `prompt_regex`, `prompt_exclude_regex` |
-
-See the [Configuration Guide](./docs/configuration-guide.md) for detailed examples including security patterns for path traversal prevention, shell injection blocking, and sensitive file protection.
+See the [Configuration Guide](./docs/configuration-guide.md) for detailed rule syntax and security patterns.
 
 ## Development
 
@@ -198,29 +171,9 @@ cargo fmt       # Format code
 
 ## Logging
 
-### Audit File (JSON)
+**Audit file** (JSON): Records tool use to `audit_file`. Set `audit_level` to `off`, `matched` (default), or `all`.
 
-(confusingly this used to be also called 'logging' - renamed to auditing now for clarity)
-
-Records tool use to the file specified by `audit_file`. Controlled by `audit_level` in TOML:
-
-- `off` - disabled
-- `matched` (default) - records only allow/deny decisions
-- `all` - records everything including passthrough
-
-Format (one JSON object per line):
-
-```json
-{"timestamp":"2025-10-06T10:27:59Z","session_id":"abc123","tool_name":"Read","tool_input":{...},"decision":"allow","reason":"Matched rule...","cwd":"/path"}
-```
-
-### Diagnostic Log (stderr)
-
-For debugging rule matching. Controlled by `RUST_LOG` environment variable:
-
-```bash
-RUST_LOG=debug cargo run -- run --config example.toml
-```
+**Diagnostic log** (stderr): Set `RUST_LOG=debug` for rule matching debug output.
 
 ## License
 

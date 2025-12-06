@@ -21,7 +21,7 @@ pub enum Decision {
 }
 
 /// Maximum length for string fields in audit entries (in characters).
-const MAX_STRING_LEN: usize = 1024;
+const MAX_STRING_LEN: usize = 256;
 
 #[derive(Debug, Serialize)]
 struct AuditEntry {
@@ -43,7 +43,7 @@ fn truncate_json_strings(value: &serde_json::Value, max_len: usize) -> serde_jso
                 value.clone()
             } else {
                 let truncated: String = s.chars().take(max_len).collect();
-                serde_json::Value::String(format!("{}… [truncated]", truncated))
+                serde_json::Value::String(format!("{}…", truncated))
             }
         }
         serde_json::Value::Array(arr) => serde_json::Value::Array(
@@ -136,7 +136,7 @@ mod tests {
         let result = truncate_json_strings(&input, 50);
 
         let truncated = result.as_str().unwrap();
-        assert!(truncated.ends_with("… [truncated]"));
+        assert!(truncated.ends_with("…"));
         assert!(truncated.starts_with("xxxxxxxxxx"));
     }
 
@@ -158,7 +158,7 @@ mod tests {
 
         // Long field truncated
         let content = obj.get("content").unwrap().as_str().unwrap();
-        assert!(content.ends_with("… [truncated]"));
+        assert!(content.ends_with("…"));
     }
 
     #[test]
@@ -174,12 +174,12 @@ mod tests {
 
         // Nested object string truncated
         let inner = result["outer"]["inner"].as_str().unwrap();
-        assert!(inner.ends_with("… [truncated]"));
+        assert!(inner.ends_with("…"));
 
         // Array elements handled
         assert_eq!(result["array"][0], "short");
         let arr_long = result["array"][1].as_str().unwrap();
-        assert!(arr_long.ends_with("… [truncated]"));
+        assert!(arr_long.ends_with("…"));
     }
 
     #[test]
