@@ -159,9 +159,9 @@ match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 | `regex` | string or list | Unanchored regex search (use `^`/`$` explicitly). With a list, passes if **any** item matches. |
 | `not_regex` | string or list | Fails if **any** item matches. This is the exclusion / safety net: an excluded call makes the rule not match — it does **not** become a deny. |
 | `equals` | string | Exact string equality. |
-| `glob` | string | Glob match on the value (e.g. `**/*.rs`). |
+| `glob` | string | Glob match on the value (e.g. `**/*.rs`). Path-style: `*` does not cross `/`, `**` does. Intended for simple path checks — use `regex` for commands. |
 | `under` | list of strings | Value is a path; passes if it lies inside any listed directory (see below). |
-| `exists` | bool | Field present / absent. |
+| `exists` | bool | Field present / absent. The only matcher that can pass when the field is missing (`exists = false`); every other matcher fails on a missing field. |
 
 List items starting with `@` reference a `[patterns]` entry. Unknown names, invalid regexes or invalid globs are config errors (reported by `validate` and at load). An item starting with `@` is always a pattern reference; a regex that genuinely starts with `@` must be written `\@` or `[@]`. An empty matcher table (`match."x" = {}`) or empty list (`regex = []`) is a config error.
 

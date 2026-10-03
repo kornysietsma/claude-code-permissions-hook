@@ -330,3 +330,102 @@ fn successful_decisions_have_no_warnings() {
     assert_eq!(decision(&outcome.output), Some("allow"));
     assert!(outcome.warnings.is_empty());
 }
+
+#[test]
+fn equals_matches_the_whole_value_only() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+match."tool_input.subagent_type" = { equals = "Explore" }
+"#;
+
+    assert_eq!(
+        decision(&run_claude(config, &fixture("agent"))),
+        Some("allow")
+    );
+    let other = with_field("agent", &["tool_input", "subagent_type"], json!("Explorer"));
+    assert_eq!(run_claude(config, &other), None);
+}
+
+#[test]
+fn exists_checks_presence_including_absence() {
+    let present = r#"
+[[rule]]
+decision = "ask"
+match."effort" = { exists = true }
+"#;
+    let absent = r#"
+[[rule]]
+decision = "ask"
+tool = "Bash"
+match."agent_id" = { exists = false }
+"#;
+
+    assert_eq!(
+        decision(&run_claude(present, &fixture("bash"))),
+        Some("ask")
+    );
+    assert_eq!(decision(&run_claude(absent, &fixture("bash"))), Some("ask"));
+    let in_subagent = with_field("bash", &["agent_id"], json!("subagent-001"));
+    assert_eq!(run_claude(absent, &in_subagent), None);
+}
+
+#[test]
+fn glob_matches_paths_and_star_does_not_cross_directories() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+match."tool_input.file_path" = { glob = "/Users/someone/prj/*/src/*.rs" }
+"#;
+
+    assert_eq!(
+        decision(&run_claude(config, &fixture("read"))),
+        Some("allow")
+    );
+    let nested = with_field(
+        "read",
+        &["tool_input", "file_path"],
+        json!("/Users/someone/prj/demo/src/deep/main.rs"),
+    );
+    assert_eq!(run_claude(config, &nested), None);
+
+    let double_star = r#"
+[[rule]]
+decision = "allow"
+match."tool_input.file_path" = { glob = "**/*.rs" }
+"#;
+    assert_eq!(decision(&run_claude(double_star, &nested)), Some("allow"));
+}
+
+#[test]
+fn several_matchers_on_one_field_must_all_pass() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+match."tool_input.file_path" = { glob = "**/*.rs", not_regex = '/deep/' }
+"#;
+
+    assert_eq!(
+        decision(&run_claude(config, &fixture("read"))),
+        Some("allow")
+    );
+    let nested = with_field(
+        "read",
+        &["tool_input", "file_path"],
+        json!("/Users/someone/prj/demo/src/deep/main.rs"),
+    );
+    assert_eq!(run_claude(config, &nested), None);
+}
+
+#[test]
+fn invalid_glob_is_a_config_error() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+match."tool_input.file_path" = { glob = "src/[unclosed" }
+"#;
+    let output = run_claude(config, &fixture("read"));
+
+    assert_eq!(decision(&output), Some("ask"));
+    assert!(reason(&output).contains("glob"), "{}", reason(&output));
+}

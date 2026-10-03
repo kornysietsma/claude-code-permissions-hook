@@ -1,5 +1,6 @@
 use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule};
 use anyhow::{Context, Result, anyhow, bail};
+use globset::GlobBuilder;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -62,6 +63,9 @@ struct RawRule {
 struct RawFieldMatch {
     regex: Option<OneOrMany>,
     not_regex: Option<OneOrMany>,
+    equals: Option<String>,
+    glob: Option<String>,
+    exists: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -164,6 +168,20 @@ fn compile_field(
         matchers.push(FieldMatcher::NotRegex(
             compile_regexes(not_regex, patterns).context("not_regex")?,
         ));
+    }
+    if let Some(equals) = field.equals {
+        matchers.push(FieldMatcher::Equals(equals));
+    }
+    if let Some(glob) = field.glob {
+        let matcher = GlobBuilder::new(&glob)
+            .literal_separator(true)
+            .build()
+            .context("glob")?
+            .compile_matcher();
+        matchers.push(FieldMatcher::Glob(matcher));
+    }
+    if let Some(exists) = field.exists {
+        matchers.push(FieldMatcher::Exists(exists));
     }
     if matchers.is_empty() {
         bail!("no matchers given");

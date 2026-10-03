@@ -1,3 +1,4 @@
+use globset::GlobMatcher;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,6 +39,10 @@ pub struct FieldCondition {
 pub enum FieldMatcher {
     Regex(Vec<Regex>),
     NotRegex(Vec<Regex>),
+    Equals(String),
+    Glob(GlobMatcher),
+    /// The only matcher that can pass when the field is missing
+    Exists(bool),
 }
 
 #[derive(Debug)]
@@ -95,12 +100,17 @@ impl Rule {
 
 impl FieldCondition {
     fn matches(&self, payload: &Value) -> bool {
-        let Some(text) = lookup(payload, &self.path).and_then(as_text) else {
-            return false;
-        };
-        self.matchers.iter().all(|matcher| match matcher {
-            FieldMatcher::Regex(regexes) => regexes.iter().any(|r| r.is_match(&text)),
-            FieldMatcher::NotRegex(regexes) => !regexes.iter().any(|r| r.is_match(&text)),
+        let value = lookup(payload, &self.path);
+        let text = value.and_then(as_text);
+        self.matchers.iter().all(|matcher| match (matcher, &text) {
+            (FieldMatcher::Exists(expected), _) => value.is_some() == *expected,
+            (_, None) => false,
+            (FieldMatcher::Regex(regexes), Some(text)) => regexes.iter().any(|r| r.is_match(text)),
+            (FieldMatcher::NotRegex(regexes), Some(text)) => {
+                !regexes.iter().any(|r| r.is_match(text))
+            }
+            (FieldMatcher::Equals(expected), Some(text)) => text == expected,
+            (FieldMatcher::Glob(glob), Some(text)) => glob.is_match(text.as_ref()),
         })
     }
 }

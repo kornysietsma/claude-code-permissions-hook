@@ -152,7 +152,7 @@ Claude verification on this machine uses a **scratch project** with the hook reg
 
 ### Phase 3: Remaining matchers
 
-- [ ] **3.1 `equals`, `exists`, `glob`**
+- [x] **3.1 `equals`, `exists`, `glob`**
   - Add `globset` and compile globs when the config loads; a bad glob is a config error.
   - **Verify:** acceptance tests show each matcher passing and failing, `exists = false` on a missing field matching, several matchers on one field being ANDed, and a bad glob producing a config error that becomes `ask`.
 
