@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub struct Config {
     pub audit: Option<AuditConfig>,
+    pub pattern_names: Vec<String>,
     pub policy: Policy,
 }
 
@@ -30,6 +31,16 @@ pub enum AuditLevel {
     #[default]
     Matched,
     All,
+}
+
+impl AuditLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuditLevel::Off => "off",
+            AuditLevel::Matched => "matched",
+            AuditLevel::All => "all",
+        }
+    }
 }
 
 fn default_max_value_len() -> usize {
@@ -94,6 +105,7 @@ impl Config {
     pub fn from_toml(contents: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(contents)?;
         let patterns = compile_patterns(&raw.patterns)?;
+        let pattern_names = raw.patterns.keys().cloned().collect();
         let rules = raw
             .rules
             .into_iter()
@@ -102,6 +114,7 @@ impl Config {
             .collect::<Result<_>>()?;
         Ok(Config {
             audit: raw.audit,
+            pattern_names,
             policy: Policy { rules },
         })
     }

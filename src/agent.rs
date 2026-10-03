@@ -54,6 +54,28 @@ impl Agent {
             .ok_or_else(|| anyhow!("no string {key}; not a {} payload", self.name()))
     }
 
+    /// Top-level payload keys documented for this agent
+    pub fn top_level_keys(self) -> &'static [&'static str] {
+        match self {
+            Agent::Claude => &[
+                "session_id",
+                "prompt_id",
+                "transcript_path",
+                "cwd",
+                "scratchpad_dir",
+                "permission_mode",
+                "effort",
+                "hook_event_name",
+                "agent_id",
+                "agent_type",
+                "tool_name",
+                "tool_input",
+                "tool_use_id",
+            ],
+            Agent::Copilot => &["sessionId", "timestamp", "cwd", "toolName", "toolArgs"],
+        }
+    }
+
     pub fn render(self, decision: Decision, reason: &str) -> Value {
         match self {
             Agent::Claude => json!({

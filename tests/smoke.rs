@@ -195,3 +195,110 @@ fn unwritable_audit_file_only_warns() {
         stderr(&output)
     );
 }
+
+const VALIDATE_CONFIG: &str = r#"
+[audit]
+file = "/tmp/validate-test.jsonl"
+level = "all"
+max_value_len = 200
+
+[patterns]
+shell_chain = ';|&&'
+parent_dir = '\.\.'
+
+[[rule]]
+decision = "allow"
+description = "cargo"
+tool = "Bash"
+match."tool_input.command" = { regex = '^cargo ', not_regex = "@shell_chain" }
+
+[[rule]]
+decision = "deny"
+tool = "Read"
+match."tool_input.file_path" = { regex = '\.env$' }
+
+[[rule]]
+decision = "deny"
+description = "outside cwd"
+match."cwd" = { equals = "/" }
+"#;
+
+fn validate(agent: &str, config: &str) -> Output {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, config).unwrap();
+    tool_gate_hook(
+        dir.path(),
+        &[
+            "validate",
+            "--agent",
+            agent,
+            "--config",
+            path.to_str().unwrap(),
+        ],
+        "",
+    )
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn validate_prints_a_summary_of_a_valid_config() {
+    let output = validate("claude", VALIDATE_CONFIG);
+
+    assert_eq!(output.status.code(), Some(0));
+    let summary = stdout(&output);
+    assert!(
+        summary.contains("3 rules (allow 1, ask 0, deny 2)"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("patterns: parent_dir, shell_chain"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("audit: /tmp/validate-test.jsonl (level all, max_value_len 200)"),
+        "{summary}"
+    );
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn validate_summary_says_so_when_there_is_no_audit_or_patterns() {
+    let output = validate("claude", "[[rule]]\ndecision = \"ask\"");
+
+    let summary = stdout(&output);
+    assert!(
+        summary.contains("1 rules (allow 0, ask 1, deny 0)"),
+        "{summary}"
+    );
+    assert!(summary.contains("patterns: none"), "{summary}");
+    assert!(summary.contains("audit: off"), "{summary}");
+}
+
+#[test]
+fn validate_fails_on_a_broken_config() {
+    let output = validate(
+        "claude",
+        "[[rule]]\ndecision = \"allow\"\nmatch.\"x\" = { regex = \"(\" }",
+    );
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("rule #1"), "{}", stderr(&output));
+}
+
+#[test]
+fn validate_warns_about_field_paths_unknown_to_the_agent_without_failing() {
+    let output = validate("copilot", VALIDATE_CONFIG);
+
+    assert_eq!(output.status.code(), Some(0));
+    let warnings = stderr(&output);
+    assert!(warnings.contains("rule #1 (cargo)"), "{warnings}");
+    assert!(warnings.contains("tool_input.command"), "{warnings}");
+    assert!(warnings.contains("rule #2"), "{warnings}");
+    assert!(warnings.contains("tool_input.file_path"), "{warnings}");
+    assert!(!warnings.contains("outside cwd"), "{warnings}");
+    assert!(stdout(&output).contains("3 rules"));
+}

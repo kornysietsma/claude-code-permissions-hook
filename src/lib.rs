@@ -5,6 +5,7 @@ pub mod auditing;
 pub mod config;
 mod paths;
 pub mod policy;
+pub mod validate;
 
 pub use agent::Agent;
 pub use auditing::AuditRecord;

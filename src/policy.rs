@@ -91,17 +91,22 @@ impl Rule {
                 .all(|field| field.matches(payload, call, context))
     }
 
+    /// How messages refer to this rule, e.g. `rule #2 (rm test files)`
+    pub fn label(&self) -> String {
+        let description = self
+            .description
+            .as_ref()
+            .map(|d| format!(" ({d})"))
+            .unwrap_or_default();
+        format!("rule #{}{description}", self.index)
+    }
+
     pub fn reason(&self) -> String {
         self.reason.clone().unwrap_or_else(|| {
-            let description = self
-                .description
-                .as_ref()
-                .map(|d| format!(" ({d})"))
-                .unwrap_or_default();
             format!(
-                "tool-gate-hook: {} by rule #{}{description}",
+                "tool-gate-hook: {} by {}",
                 self.decision.as_str(),
-                self.index
+                self.label()
             )
         })
     }

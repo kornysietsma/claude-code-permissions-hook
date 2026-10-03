@@ -1,12 +1,11 @@
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 use env_logger::Env;
-use log::info;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use tool_gate_hook::{Agent, Config, Context, auditing};
+use tool_gate_hook::{Agent, Config, Context, auditing, validate};
 
 #[derive(Debug, Parser)]
 #[clap(
@@ -74,10 +73,11 @@ fn run_validate_config(target: &Target) -> Result<()> {
     let path = target.config_path(&home()?);
     let config =
         Config::load(&path).with_context(|| format!("invalid config {}", path.display()))?;
-    info!(
-        "Configuration is valid: {} rules",
-        config.policy.rules.len()
-    );
+    let validation = validate::validate(target.agent, &config);
+    for warning in &validation.warnings {
+        eprintln!("warning: {warning}");
+    }
+    println!("{} is valid\n{}", path.display(), validation.summary);
     Ok(())
 }
 

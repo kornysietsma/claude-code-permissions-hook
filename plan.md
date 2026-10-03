@@ -15,15 +15,15 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Current state (after step 5.3)
+## Current state (after step 6.1)
 
-Both agents are supported end to end: config loading, all six matchers, tiered decisions, Claude and Copilot adapters, error handling and auditing (records are written by `main`). What remains is `validate` output (phase 6), examples and docs (7), and verification against the real agents (8, 9).
+Both agents are supported end to end: config loading, all six matchers, tiered decisions, Claude and Copilot adapters, error handling and auditing (records are written by `main`). What remains is examples and docs (7), and verification against the real agents (8, 9).
 
 ### Modules as built
 
 | Module | Contents |
 |---|---|
-| `main.rs` | clap CLI (`run`/`validate`, `Target { agent, config }`). `run` builds `Context::new(home)` from `std::env::home_dir()`, reads stdin, calls `lib::run`, prints `warnings` to stderr, appends `outcome.audit` with `auditing::append` (a failure is only a stderr warning) and prints `output` to stdout; **always exits 0**. `validate` loads the config, exits 1 on error; its summary is still an `info!` log, so it prints nothing by default (fixed in 6.1). Imports anyhow's trait as `Context as _` to avoid clashing with `tool_gate_hook::Context`. |
+| `main.rs` | clap CLI (`run`/`validate`, `Target { agent, config }`). `run` builds `Context::new(home)` from `std::env::home_dir()`, reads stdin, calls `lib::run`, prints `warnings` to stderr, appends `outcome.audit` with `auditing::append` (a failure is only a stderr warning) and prints `output` to stdout; **always exits 0**. `validate` loads the config, prints `validate::validate`'s summary to stdout and warnings (field paths unknown to the agent) to stderr, exits 1 on error. Imports anyhow's trait as `Context as _` to avoid clashing with `tool_gate_hook::Context`. |
 | `lib.rs` | `Context { home, clock: fn() -> DateTime<FixedOffset> }` with `Context::new(home)` using the local clock (tests override `clock`); `Outcome { output: Option<Value>, warnings: Vec<String>, audit: Option<(PathBuf, AuditRecord)> }`; `run(agent, config_path, stdin, &Context) -> Outcome`. Order: parse JSON and `agent.parse()` first (failure → passthrough + warning, plus an error audit record if the config loads quietly), then `Config::load` (failure → `ask` with `tool-gate-hook config error (<path>): <details>`, no audit), then evaluate, build the audit record and render. |
 | `agent.rs` | `Agent { Claude, Copilot }` (clap `ValueEnum`); `name()`; `default_config_path(home)`; `parse(&Value) -> Result<ToolCall>` (Claude: `tool_name`, `cwd`, rejects a non-`PreToolUse` `hook_event_name`; Copilot: `toolName`, `cwd`); `render(Decision, reason) -> Value`; `ToolCall { tool_name, cwd }`. Missing-field errors name the agent. |
 | `config.rs` | `Config { audit: Option<AuditConfig>, policy }`, `Config::load(path)` / `from_toml(str)`. `AuditConfig { file, level, max_value_len }`, `AuditLevel { Off, Matched, All }`. Each `[[rule]]` is parsed from a `toml::Table` separately so errors read `rule #N (description): match."path": <matcher>: …`. `deny_unknown_fields` everywhere. `OneOrMany` for `regex`/`not_regex`; `@name` resolves `[patterns]`. Load errors don't include the path — callers add it. |
@@ -111,7 +111,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
 
 ### Phase 6: `validate`
 
-- [ ] **6.1 Validate command**
+- [x] **6.1 Validate command**
   - Print a summary to **stdout** (today it's an `info!` log that is invisible by default — review-findings bug #7): rule counts per decision, the pattern names, and the audit file, level and `max_value_len`.
   - Add the known top-level keys per agent to `agent.rs` (Claude: `session_id`, `prompt_id`, `transcript_path`, `cwd`, `scratchpad_dir`, `permission_mode`, `effort`, `hook_event_name`, `agent_id`, `agent_type`, `tool_name`, `tool_input`, `tool_use_id`; Copilot: `sessionId`, `timestamp`, `cwd`, `toolName`, `toolArgs`). Warnings are not errors (exit 0).
   - Exit non-zero on any config error.
