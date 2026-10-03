@@ -248,7 +248,7 @@ Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
 | Situation | Behaviour |
 |---|---|
 | Config error (missing explicit or default file, bad TOML, invalid regex/glob, unknown `@pattern`, unknown matcher key) | Output **`ask`** with reason `tool-gate-hook config error (<path>): <details>`, plus stderr. Loud but never locks you out — chosen because a config may break long after you've forgotten the hook exists. |
-| Malformed stdin JSON / payload doesn't match `--agent` | Passthrough (no output), audit an error record, stderr warning. |
+| Malformed stdin JSON / payload doesn't match `--agent` | Passthrough (no output), audit an error record, stderr warning. The payload is checked **before** the config is loaded, so a payload meant for another agent passes through quietly even when the config is broken — this hook isn't the one that should answer it. |
 | Audit write failure | stderr only; decision unaffected. |
 | Invalid command-line arguments (e.g. missing or unknown `--agent`) | clap error on stderr, **exit 2** — deliberately blocking (Claude treats exit 2 as block, Copilot as deny). This only happens right after editing a hook registration, so it surfaces immediately; without a valid `--agent` no well-formed `ask` can be produced anyway. |
 

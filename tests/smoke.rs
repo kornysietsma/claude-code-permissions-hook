@@ -39,11 +39,11 @@ fn agent_flag_is_required() {
 }
 
 #[test]
-fn run_uses_per_agent_default_config_under_home() {
+fn run_uses_default_config_under_home() {
     let home = TempDir::new().unwrap();
-    let output = tool_gate_hook(home.path(), &["run", "--agent", "copilot"], BASH_PAYLOAD);
+    let output = tool_gate_hook(home.path(), &["run", "--agent", "claude"], BASH_PAYLOAD);
 
-    let expected = home.path().join(".config/tool-gate-hook/copilot.toml");
+    let expected = home.path().join(".config/tool-gate-hook/claude.toml");
     assert!(
         stderr(&output).contains(&expected.display().to_string()),
         "{}",
@@ -52,7 +52,7 @@ fn run_uses_per_agent_default_config_under_home() {
 }
 
 #[test]
-fn run_exits_zero_with_no_output_when_config_is_missing() {
+fn run_asks_and_exits_zero_when_config_is_missing() {
     let home = TempDir::new().unwrap();
     let output = tool_gate_hook(
         home.path(),
@@ -67,8 +67,23 @@ fn run_exits_zero_with_no_output_when_config_is_missing() {
     );
 
     assert_eq!(output.status.code(), Some(0));
-    assert!(output.stdout.is_empty());
+    let stdout: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout["hookSpecificOutput"]["permissionDecision"], "ask");
     assert!(stderr(&output).contains("/nonexistent/config.toml"));
+}
+
+#[test]
+fn run_passes_through_and_exits_zero_on_garbage_stdin() {
+    let home = TempDir::new().unwrap();
+    let output = tool_gate_hook(home.path(), &["run", "--agent", "claude"], "garbage");
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr(&output).contains("not valid JSON"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]

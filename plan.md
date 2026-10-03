@@ -144,7 +144,7 @@ Claude verification on this machine uses a **scratch project** with the hook reg
     - a custom `reason` is used, and the default reason format is correct
     - manual check: `cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config <tmp config>`
 
-- [ ] **2.3 Error handling**
+- [x] **2.3 Error handling**
   - A config error (missing file, bad TOML, bad regex, unknown pattern) produces an `ask` with the reason `tool-gate-hook config error (<path>): <details>` and a stderr warning.
   - Malformed JSON, or a payload that doesn't match the agent, produces passthrough and a warning; its audit record arrives in 5.2.
   - `main` never exits non-zero for `run`.

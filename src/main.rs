@@ -53,14 +53,20 @@ fn run_hook(target: &Target) -> Result<()> {
     io::stdin()
         .read_to_string(&mut stdin)
         .context("cannot read stdin")?;
-    if let Some(output) = tool_gate_hook::run(target.agent, &target.config_path()?, &stdin)? {
+    let outcome = tool_gate_hook::run(target.agent, &target.config_path()?, &stdin);
+    for warning in &outcome.warnings {
+        eprintln!("{warning}");
+    }
+    if let Some(output) = outcome.output {
         println!("{output}");
     }
     Ok(())
 }
 
 fn run_validate_config(target: &Target) -> Result<()> {
-    let config = Config::load(&target.config_path()?)?;
+    let path = target.config_path()?;
+    let config =
+        Config::load(&path).with_context(|| format!("invalid config {}", path.display()))?;
     info!(
         "Configuration is valid: {} rules",
         config.policy.rules.len()

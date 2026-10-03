@@ -82,9 +82,8 @@ impl OneOrMany {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("cannot read config {}", path.display()))?;
-        Self::from_toml(&contents).with_context(|| format!("invalid config {}", path.display()))
+        let contents = fs::read_to_string(path).context("cannot read file")?;
+        Self::from_toml(&contents)
     }
 
     pub fn from_toml(contents: &str) -> Result<Self> {

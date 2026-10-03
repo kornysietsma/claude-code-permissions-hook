@@ -1,9 +1,9 @@
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-use tool_gate_hook::{Agent, Config, run};
+use tool_gate_hook::{Agent, Config, Outcome, run};
 
 fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,11 +19,15 @@ fn with_field(name: &str, path: &[&str], value: Value) -> String {
     payload.to_string()
 }
 
-fn run_claude(config: &str, stdin: &str) -> Option<Value> {
+fn run_claude_outcome(config: &str, stdin: &str) -> Outcome {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("claude.toml");
     fs::write(&config_path, config).unwrap();
-    run(Agent::Claude, &config_path, stdin).unwrap()
+    run(Agent::Claude, &config_path, stdin)
+}
+
+fn run_claude(config: &str, stdin: &str) -> Option<Value> {
+    run_claude_outcome(config, stdin).output
 }
 
 fn decision(output: &Option<Value>) -> Option<&str> {
@@ -256,4 +260,73 @@ match."tool_input.subagent_type" = { regex = '^Explore$' }
         reason(&output),
         "tool-gate-hook: allow by rule #1 (read-only explorer)"
     );
+}
+
+#[test]
+fn config_error_asks_with_the_error_as_reason() {
+    let outcome = run_claude_outcome(
+        r#"
+[[rule]]
+decision = "allow"
+match."tool_input.command" = { regex = '^cargo ', not_regex = "@shell_chain" }
+"#,
+        &fixture("bash"),
+    );
+
+    assert_eq!(decision(&outcome.output), Some("ask"));
+    let reason = reason(&outcome.output);
+    assert!(
+        reason.starts_with("tool-gate-hook config error ("),
+        "{reason}"
+    );
+    assert!(reason.contains("claude.toml): "), "{reason}");
+    assert!(reason.contains("unknown pattern @shell_chain"), "{reason}");
+    assert_eq!(outcome.warnings, vec![reason.to_string()]);
+}
+
+#[test]
+fn missing_config_file_asks() {
+    let outcome = run(
+        Agent::Claude,
+        Path::new("/nonexistent/claude.toml"),
+        &fixture("bash"),
+    );
+
+    assert_eq!(decision(&outcome.output), Some("ask"));
+    assert!(reason(&outcome.output).contains("/nonexistent/claude.toml"));
+}
+
+#[test]
+fn invalid_json_passes_through_with_a_warning() {
+    let outcome = run_claude_outcome("", "not json {");
+
+    assert_eq!(outcome.output, None);
+    assert_eq!(outcome.warnings.len(), 1);
+    assert!(
+        outcome.warnings[0].contains("not valid JSON"),
+        "{:?}",
+        outcome.warnings
+    );
+}
+
+#[test]
+fn copilot_payload_passes_through_with_a_warning_even_if_config_is_broken() {
+    let copilot_payload = r#"{"sessionId":"s","timestamp":1,"cwd":"/tmp","toolName":"bash","toolArgs":{"command":"ls"}}"#;
+    let outcome = run_claude_outcome("not valid toml [[[", copilot_payload);
+
+    assert_eq!(outcome.output, None);
+    assert_eq!(outcome.warnings.len(), 1);
+    assert!(
+        outcome.warnings[0].contains("tool_name"),
+        "{:?}",
+        outcome.warnings
+    );
+}
+
+#[test]
+fn successful_decisions_have_no_warnings() {
+    let outcome = run_claude_outcome("[[rule]]\ndecision = \"allow\"", &fixture("read"));
+
+    assert_eq!(decision(&outcome.output), Some("allow"));
+    assert!(outcome.warnings.is_empty());
 }
