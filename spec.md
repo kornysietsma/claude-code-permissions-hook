@@ -28,14 +28,15 @@ Backwards compatibility is explicitly **not** required: new name, new config for
 | 1. Rename + CLI | Crate, binary, docs, `AGENTS.md` → `tool-gate-hook`; new CLI shape. |
 | 2. Test-first throughout | Each implementation step starts by writing its own acceptance tests (see Testing), then implements until green. Detailed steps are in `plan.md`. |
 | 3. Config + matching | New TOML model, named patterns, matchers, tiered decisions. |
-| 4. Agent adapters | Claude and Copilot input/output adapters. |
+| 4. Copilot adapter | The Copilot input/output adapter (the Claude one lands with phase 2). |
 | 5. Auditing | New JSONL record, truncation, error records. |
-| 6. Docs | Rewrite README and existing `docs/` files per the Documentation section. |
-| 7. Local verification | Run under real Claude Code on this machine. |
-| 8. Copilot verification | One batched session on the work machine (see below). |
-| 9. Full senior review | Review the finished code against the engineering-standards skill before the PR. |
+| 6. `validate` | Summary on stdout, warnings for field paths foreign to the agent. |
+| 7. Examples and docs | `examples/` configs and a rewrite of README and `docs/` per the Documentation section. |
+| 8. Local Claude verification | Run under real Claude Code on this machine. |
+| 9. Copilot verification | One batched session on the work machine (see below). |
+| 10. Review and PR | Review the finished code against the engineering-standards skill, then open the PR. |
 
-Push to a remote branch and open a PR near the end (after phase 8/9).
+Push to a remote branch and open a PR near the end (phase 10, after both verifications).
 
 ## CLI
 
@@ -48,7 +49,7 @@ tool-gate-hook validate --agent claude|copilot [--config PATH]
 - Default config: `~/.config/tool-gate-hook/<agent>.toml` (`claude.toml` / `copilot.toml`).
 - A relative `--config` path resolves against the process working directory.
 - `run` reads one JSON payload from stdin, writes a decision (or nothing) to stdout, always exits `0` (see Error handling).
-- `validate` loads and compiles the config, prints a summary (rule count per decision, patterns defined, audit settings) and exits non-zero on any error. It also **warns** when a rule's `match` field path doesn't start with a top-level key known for that agent (e.g. a `claude` config using `toolArgs.path`) — a cheap guard against copy-pasting rules between agents.
+- `validate` loads and compiles the config, prints a summary to **stdout** (rule count per decision, pattern names, audit file, level and `max_value_len`) and exits non-zero on any error. It also **warns** when a rule's `match` field path doesn't start with a top-level key known for that agent (e.g. a `claude` config using `toolArgs.path`) — a cheap guard against copy-pasting rules between agents. Warnings go to stderr, one per offending field, and are not errors (exit 0).
 
 ## Agent adapters
 
@@ -76,7 +77,7 @@ Output on a decision:
 
 Passthrough = no stdout output, exit 0. (Claude also offers `"defer"`, which means the same thing — not used.)
 
-Note: Claude's `Task` tool now appears to be `Agent`; verify during phase 7 and update example configs.
+Note: Claude's `Task` tool now appears to be `Agent`; verify during phase 8 and update the example configs and fixtures.
 
 ### Copilot CLI (native camelCase `preToolUse` format)
 
@@ -234,10 +235,11 @@ JSON Lines, one record per invocation, appended under `flock`.
 - `decision` is `allow | deny | ask | passthrough`; `decided_by` is omitted on passthrough. Rule `index` is 1-based file order.
 - `level`: `off` = nothing; `matched` = records where at least one rule matched, **plus all error records**; `all` = every invocation.
 - Truncation: each string value longer than `max_value_len` chars is cut and suffixed with a marker containing the original length, e.g. `…[truncated, 53211 chars]`. JSON structure and all keys are always preserved. `max_value_len = 0` disables truncation (for debugging a new agent version). All audit settings live in the config file (reloaded every call), not on the command line.
-- Error records: if stdin isn't valid JSON or doesn't match the `--agent` shape, `payload` is the raw stdin as a string (truncated) and an `error` field describes the problem.
+- Error records: if stdin isn't valid JSON or doesn't match the `--agent` shape, `payload` is the raw stdin as a string (truncated) and an `error` field describes the problem (`stdin is not valid JSON: <detail>` or the adapter's message). Like other passthroughs they have `decision: "passthrough"` and `matches: []`.
 - If the config couldn't be loaded, there is no audit destination; the error goes to stderr only (see below).
 - Audit write failures go to stderr and never affect the decision.
-- Timestamps come from an injected clock (testability).
+- `ts` is the clock read at the start of the run, with the local UTC offset and millisecond precision; `duration_us` is the difference between a read at the start and one at the end. The clock is injected (a plain function in `Context`) for testability.
+- `file` must be in an existing directory: the hook appends to the file (creating it) but does not create parent directories, so a bad path is only an audit write failure.
 
 Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
 
@@ -256,7 +258,7 @@ Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
 
 Test-first, per step: each step writes its acceptance tests before implementing (see `plan.md`).
 
-- **Acceptance tests** (primary) run in-process: they call `tool_gate_hook::run` with a fixture payload, a config written to a temp dir and an injected `Context` (temp home; fixed clock once auditing lands), and assert on the whole `Outcome` (stdout JSON, warnings, audit record) with `pretty_assertions`.
+- **Acceptance tests** (primary) run in-process: they call `tool_gate_hook::run` with a fixture payload, a config written to a temp dir and an injected `Context` (temp home; fixed clock), and assert on the whole `Outcome` (stdout JSON, warnings, audit record) with `pretty_assertions`.
 - **Smoke tests** (a handful) spawn the real binary for CLI wiring, exit codes, `validate` and the real audit file write.
 - **Coverage goal**: enough to be confident it works, not exhaustive — main behaviours plus security-relevant edge cases.
 - Fixtures: `tests/fixtures/claude/…`, `tests/fixtures/copilot/…`. Initial fixtures come from documented payload examples; later, real captured payloads (via `level = "all"`, `max_value_len = 0`) are copied in. Document a `jq` one-liner for extracting a payload from an audit record into a fixture.
@@ -278,7 +280,7 @@ Do as much as possible before this from documentation fixtures. Then, in one bat
 5. Also add a `.claude/settings.json` hook in the test repo to observe cross-reading behaviour.
 6. rsync the audit log back; turn payloads into fixtures; confirm `toolArgs` field names, repo-hook cwd, and decision output handling; fix and re-test locally.
 
-Phase 8 deliverable includes this checklist as a script or doc (`docs/copilot-verification.md`) so the session is mechanical.
+Phase 9 deliverable includes this checklist as a script or doc (`docs/copilot-verification.md`) so the session is mechanical.
 
 ## Documentation
 
@@ -288,11 +290,11 @@ The README is the entry point and stays short. Detailed reference material lives
 |---|---|
 | `README.md` | Rewrite: purpose, install, quick start for each agent side by side, user vs project setup, decision logic in brief, error behaviour, troubleshooting (PATH, config errors, Copilot reading `.claude/`). Link to `docs/` for detail. |
 | `docs/configuration-guide.md` | **Rewrite from scratch** as the full config reference: `[audit]`, `[patterns]`, `[[rule]]` fields, every matcher with examples, field paths, `under` semantics, decision tiers, and worked examples for both agents (including the mermaid example). Drop the per-tool `*_regex` field sections. |
-| `docs/tool-input-schemas.md` | **Split and rename** into `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md`. Each covers the full hook payload (top-level fields plus per-tool `tool_input` / `toolArgs`). Refresh the Claude doc from the current hooks docs and real captured payloads (e.g. `Task` → `Agent`, new top-level fields such as `permission_mode`, `agent_type`, `tool_use_id`). Write the Copilot doc from GitHub's docs and then correct it from the phase 8 captures. Keep the source-attribution table approach. State that the audit log (`level = "all"`, `max_value_len = 0`) is the authoritative source and the docs are a convenience snapshot, dated. |
+| `docs/tool-input-schemas.md` | **Split and rename** into `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md`. Each covers the full hook payload (top-level fields plus per-tool `tool_input` / `toolArgs`). Refresh the Claude doc from the current hooks docs and real captured payloads (e.g. `Task` → `Agent`, new top-level fields such as `permission_mode`, `agent_type`, `tool_use_id`). Write the Copilot doc from GitHub's docs and then correct it from the phase 9 captures. Keep the source-attribution table approach. State that the audit log (`level = "all"`, `max_value_len = 0`) is the authoritative source and the docs are a convenience snapshot, dated. |
 | `docs/review-findings.md` | New (phase 0). |
-| `docs/copilot-verification.md` | New (phase 8): the work-machine checklist. |
+| `docs/copilot-verification.md` | New (phase 9): the work-machine checklist. |
 | `tests/README.md` | Rewrite for the new fixture layout and the `jq` capture workflow. Delete the old top-level `tests/*.json` fixtures and `tests/test_config.toml`. |
-| `example.toml`, `sample-mermaid-hook.toml` | Replace with `examples/claude.toml`, `examples/copilot.toml` and `examples/mermaid-claude.toml`. Delete the old files. The mermaid file is an **illustrative** example of a tightly scoped workflow config (allow-list of commands and paths with `@shell_chain` / `@parent_dir` safety nets), loosely based on the old sample; it does not need to track the user's real workflow. |
+| `example.toml`, `sample-mermaid-hook.toml` | Replace with `examples/claude.toml`, `examples/copilot.toml` and `examples/mermaid-claude.toml`. Delete the old files. The mermaid file is an **illustrative** example of a tightly scoped workflow config (allow-list of commands and paths with `@shell_chain` / `@parent_dir` safety nets), loosely based on the old sample (with the safety nets applied to every command rule); it does not need to track the user's real workflow. |
 | `update-thoughts.md` | Delete once the spec is accepted (superseded by this spec). |
 | `AGENTS.md` | Update to the new name, structure, commands and docs layout. |
 - Code standards: engineering-standards skill — minimal comments, pure functions where possible, `Result`-based errors, latest stable dependencies, Rust 2024 edition, existing lint settings.
