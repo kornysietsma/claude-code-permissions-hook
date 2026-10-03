@@ -91,7 +91,7 @@ Claude verification on this machine uses a **scratch project** with the hook reg
   - Bump all remaining dependencies to their latest stable versions (`cargo outdated`, then edit `Cargo.toml`, then `cargo update`).
   - **Verify:** the quality gate passes with the existing tests unchanged, `cargo outdated` shows nothing outstanding, and `cat tests/read_allowed.json | cargo run -- run --config tests/test_config.toml` still prints an allow (with audit pointed at a temp file and level `all`, to exercise the new lock).
 
-- [ ] **0.2 Review findings**
+- [x] **0.2 Review findings**
   - Write `docs/review-findings.md` covering design lessons to carry forward and smells to avoid. Already seen:
     - `load_config` returns rules that `run_hook` discards
     - `process_hook_input_with_config` recompiles the rules
@@ -106,6 +106,7 @@ Claude verification on this machine uses a **scratch project** with the hook reg
 ### Phase 1: Rename and CLI
 
 - [ ] **1.1 Rename to `tool-gate-hook`**
+  - Move the lint attributes into a `[lints.rust]` / `[lints.clippy]` section in `Cargo.toml` (`unsafe_code = "forbid"`, `rust_2018_idioms`, `rust_2024_compatibility`, `deprecated_safe`, `clippy::all`), and delete the `#![…]` attributes from every source file.
   - Change the package and binary name to `tool-gate-hook` and the library crate to `tool_gate_hook`. Update the `use` paths, the clap `about` text and `AGENTS.md` (name and commands only; the full rewrite is in 8.x).  - **Verify:** the quality gate passes, and `cargo run -- validate --config example.toml` works under the new name.
 
 - [ ] **1.2 New CLI shape**
