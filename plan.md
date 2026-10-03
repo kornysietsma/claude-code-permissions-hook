@@ -128,10 +128,10 @@ Claude verification on this machine uses a **scratch project** with the hook reg
   - Delete the old `[[allow]]`/`[[deny]]` structures.
   - **Verify:** tests cover a valid config and a few representative errors (an unknown `@pattern`, a bad regex, a misspelt matcher key), with the error message naming the offending rule.
 
-- [ ] **2.2 Evaluation and Claude adapter (the `run` pipeline)**
+- [x] **2.2 Evaluation and Claude adapter (the `run` pipeline)**
   - `policy.rs` covers field-path lookup (missing path means no match; numbers and booleans match as JSON text; objects and arrays never match `regex`), the AND of all entries in `match`, evaluation of every rule, and the tiered decision.
   - `agent.rs` contains the Claude parse and render functions, with default reasons.
-  - Add `Context`, `Clock` and `Outcome`, and `lib::run` wired into `main`. The audit record is still the old one or a stub, since it gets replaced in 5.1.
+  - `lib::run` wired into `main`. (As built: `Context`/`Clock`/`Outcome` are deferred to the steps that first need them — 2.3, 3.2, 5.1 — and auditing is off until 5.1 rather than stubbed.)
   - Delete the old `matcher.rs`, `hook_io.rs`, `tests/integration_test.rs` and `tests/*.json`, and add `tests/fixtures/claude/` (Bash, Read, Write, Edit, Agent payloads in the current documented shape).
   - **Verify:**
     - deny beats allow regardless of file order, and ask beats allow

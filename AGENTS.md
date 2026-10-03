@@ -19,7 +19,7 @@ cargo build --release
 cargo run -- validate --agent claude --config example.toml
 
 # Run as hook (reads JSON from stdin)
-cat tests/read_allowed.json | cargo run -- run --agent claude --config example.toml
+cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config example.toml
 
 # Run tests
 cargo test
@@ -47,11 +47,12 @@ cargo fmt
 
 Mid-rework (see `spec.md` and `plan.md`, which are the source of truth for the target design and progress):
 
+- **src/lib.rs**: `run()` — config + stdin in, output JSON (or passthrough) out; no I/O beyond reading the config
 - **src/main.rs**: CLI (`run` / `validate`, required `--agent`), all I/O; `run` always exits 0
-- **src/agent.rs**: `Agent` enum (claude/copilot), default config paths
+- **src/agent.rs**: `Agent` enum (claude/copilot): default config paths, payload parsing, output rendering
 - **src/config.rs**: TOML parsing (`[audit]`, `[patterns]`, `[[rule]]`) and compilation to a `Policy`
-- **src/policy.rs**: compiled rule types and `Decision` (allow < ask < deny)
-- **src/hook_io.rs**, **src/auditing.rs**: legacy, replaced in plan steps 2.2 and 5.1
+- **src/policy.rs**: compiled rules, field-path lookup, evaluation; `Decision` (allow < ask < deny)
+- **src/auditing.rs**: only the truncation helper for now; audit records return in plan step 5.1
 
 ## Important Details
 

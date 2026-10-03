@@ -1,38 +1,7 @@
-use crate::config::AuditLevel;
-use crate::hook_io::HookInput;
-use chrono::{DateTime, Utc};
-use log::warn;
-use serde::Serialize;
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::Path;
-
-/// The outcome of permission checking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Decision {
-    Allow,
-    Deny,
-    Passthrough,
-}
-
-/// Maximum length for string fields in audit entries (in characters).
-const MAX_STRING_LEN: usize = 256;
-
-#[derive(Debug, Serialize)]
-struct AuditEntry {
-    timestamp: DateTime<Utc>,
-    session_id: String,
-    tool_name: String,
-    tool_input: serde_json::Value,
-    decision: Decision,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-    cwd: String,
-}
+// Audit records are rebuilt in plan step 5.1; only the truncation helper survives until then
 
 /// Recursively truncate string fields in a JSON value that exceed `max_len` characters.
-fn truncate_json_strings(value: &serde_json::Value, max_len: usize) -> serde_json::Value {
+pub fn truncate_json_strings(value: &serde_json::Value, max_len: usize) -> serde_json::Value {
     match value {
         serde_json::Value::String(s) => {
             if s.chars().count() <= max_len {
@@ -55,59 +24,6 @@ fn truncate_json_strings(value: &serde_json::Value, max_len: usize) -> serde_jso
         // Numbers, bools, null pass through unchanged
         _ => value.clone(),
     }
-}
-
-/// Write tool use to the audit file, respecting the configured audit level.
-pub fn audit_tool_use(
-    audit_path: &Path,
-    audit_level: AuditLevel,
-    input: &HookInput,
-    decision: Decision,
-    reason: Option<&str>,
-) {
-    let should_audit = match audit_level {
-        AuditLevel::Off => false,
-        AuditLevel::Matched => decision != Decision::Passthrough,
-        AuditLevel::All => true,
-    };
-
-    if !should_audit {
-        return;
-    }
-
-    if let Err(e) = try_audit_tool_use(audit_path, input, decision, reason) {
-        warn!("Failed to write audit entry: {}", e);
-    }
-}
-
-fn try_audit_tool_use(
-    audit_path: &Path,
-    input: &HookInput,
-    decision: Decision,
-    reason: Option<&str>,
-) -> anyhow::Result<()> {
-    let entry = AuditEntry {
-        timestamp: Utc::now(),
-        session_id: input.session_id.clone(),
-        tool_name: input.tool_name.clone(),
-        tool_input: truncate_json_strings(&input.tool_input, MAX_STRING_LEN),
-        decision,
-        reason: reason.map(String::from),
-        cwd: input.cwd.clone(),
-    };
-
-    let json_line = serde_json::to_string(&entry)?;
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(audit_path)?;
-
-    file.lock()?;
-    writeln!(file, "{}", json_line)?;
-    file.unlock()?;
-
-    Ok(())
 }
 
 #[cfg(test)]

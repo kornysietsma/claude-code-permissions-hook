@@ -1,4 +1,7 @@
+use crate::policy::Decision;
+use anyhow::{Result, anyhow, bail};
 use clap::ValueEnum;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -19,6 +22,42 @@ impl Agent {
         home.join(".config")
             .join("tool-gate-hook")
             .join(format!("{}.toml", self.name()))
+    }
+
+    /// Extracts the tool name, or explains why the payload isn't from this agent
+    pub fn tool_name(self, payload: &Value) -> Result<String> {
+        match self {
+            Agent::Claude => {
+                if let Some(event) = payload.get("hook_event_name")
+                    && event != "PreToolUse"
+                {
+                    bail!("not a PreToolUse payload (hook_event_name = {event})");
+                }
+                payload
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow!("no string tool_name; not a Claude Code payload"))
+            }
+            Agent::Copilot => bail!("Copilot support arrives in plan step 4.1"),
+        }
+    }
+
+    pub fn render(self, decision: Decision, reason: &str) -> Value {
+        match self {
+            Agent::Claude => json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": decision.as_str(),
+                    "permissionDecisionReason": reason,
+                },
+                "suppressOutput": true,
+            }),
+            Agent::Copilot => json!({
+                "permissionDecision": decision.as_str(),
+                "permissionDecisionReason": reason,
+            }),
+        }
     }
 }
 

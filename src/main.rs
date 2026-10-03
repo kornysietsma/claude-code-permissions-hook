@@ -2,11 +2,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use env_logger::Env;
 use log::info;
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tool_gate_hook::auditing::{Decision, audit_tool_use};
-use tool_gate_hook::hook_io::HookInput;
 use tool_gate_hook::{Agent, Config};
 
 #[derive(Debug, Parser)]
@@ -50,18 +49,12 @@ impl Target {
 }
 
 fn run_hook(target: &Target) -> Result<()> {
-    let config = Config::load(&target.config_path()?)?;
-    let input = HookInput::read_from_stdin().context("Failed to read hook input")?;
-
-    // Rule evaluation arrives in plan step 2.2; until then every call passes through
-    if let Some(audit) = &config.audit {
-        audit_tool_use(
-            &audit.file,
-            audit.level,
-            &input,
-            Decision::Passthrough,
-            None,
-        );
+    let mut stdin = String::new();
+    io::stdin()
+        .read_to_string(&mut stdin)
+        .context("cannot read stdin")?;
+    if let Some(output) = tool_gate_hook::run(target.agent, &target.config_path()?, &stdin)? {
+        println!("{output}");
     }
     Ok(())
 }
