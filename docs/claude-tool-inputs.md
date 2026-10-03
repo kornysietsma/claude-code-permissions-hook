@@ -1,21 +1,52 @@
-# Claude Code Tool Input Schemas
+# Claude Code hook payloads
 
-This document describes the `tool_input` JSON schemas for Claude Code's built-in tools. These schemas are relevant when writing PreToolUse hooks that need to inspect or match against tool inputs.
+What Claude Code sends to a `PreToolUse` hook on stdin, and so what `match."<path>"` rules can address. Rule field paths are dotted paths into this JSON, e.g. `tool_input.command` or `permission_mode`.
 
-## Source Attribution
+> **The audit log is the authoritative source.** Set `level = "all"` and `max_value_len = 0` in `[audit]` to record exactly what your Claude Code version sends (see [tests/README.md](../tests/README.md) for turning a record into a fixture). This document is a convenience snapshot, last compiled on 2026-10-03 from the Claude Code hooks documentation and the sources below; per-tool `tool_input` fields have not yet been re-checked against captured payloads.
 
-> **Important**: As of December 2025, Anthropic does not publish official documentation for tool_input schemas. The information below is compiled from:
->
-> | Source | Reliability | Notes |
-> |--------|-------------|-------|
-> | [Claude Code system prompt](https://gist.github.com/wong2/e0f34aac66caf890a332f7b6f9e2ba8f) | High | Extracted from actual Claude Code sessions; schemas are embedded in the system prompt |
-> | [vtrivedy tools reference](https://www.vtrivedy.com/posts/claudecode-tools-reference) | Medium-High | Community-maintained, cross-referenced with system prompt |
-> | [bgauryy implementation gist](https://gist.github.com/bgauryy/0cdb9aa337d01ae5bd0c803943aa36bd) | Medium | Reverse-engineered from behavior |
-> | Direct observation | High | Verified by inspecting actual hook inputs in this project |
->
-> Schemas may change between Claude Code versions. Always test against actual hook inputs.
+## Top-level fields
+
+```json
+{
+  "session_id": "0d5f6c1e-test",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/Users/someone/.claude/projects/-Users-someone-prj-demo/0d5f6c1e-test.jsonl",
+  "cwd": "/Users/someone/prj/demo",
+  "permission_mode": "default",
+  "effort": { "level": "high" },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "cargo test" },
+  "tool_use_id": "toolu_01..."
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `tool_name` | Matched by a rule's `tool`. Claude's tool names are capitalised (`Bash`, `Read`, ...). MCP tools are `mcp__<server>__<tool>`. |
+| `cwd` | Required by this hook; also what `{cwd}` expands to in `under`. |
+| `hook_event_name` | Always `PreToolUse` for this hook; any other value is treated as a payload for another purpose and passed through. |
+| `tool_input` | A per-tool object, documented below. |
+| `permission_mode`, `effort.level`, `agent_id`, `agent_type`, `session_id`, `prompt_id`, `tool_use_id`, `transcript_path`, `scratchpad_dir` | Available to rules, e.g. `match."permission_mode" = { equals = "plan" }`. `agent_id` and `agent_type` are only present when the call comes from a subagent. |
+
+Note: the subagent tool was called `Task` in earlier versions of Claude Code and appears to be `Agent` now. The test fixture `tests/fixtures/claude/agent.json` assumes `Agent`; a rule can cover both with `tool = "Task|Agent"`. To be confirmed from a real capture in plan step 8.1.
+
+## Source attribution
+
+Anthropic does not publish a complete schema for `tool_input`. The per-tool tables below are compiled from:
+
+| Source | Reliability | Notes |
+|--------|-------------|-------|
+| [Claude Code system prompt](https://gist.github.com/wong2/e0f34aac66caf890a332f7b6f9e2ba8f) | High | Extracted from actual sessions; schemas are embedded in the system prompt |
+| [vtrivedy tools reference](https://www.vtrivedy.com/posts/claudecode-tools-reference) | Medium-High | Community-maintained, cross-referenced with the system prompt |
+| [bgauryy implementation gist](https://gist.github.com/bgauryy/0cdb9aa337d01ae5bd0c803943aa36bd) | Medium | Reverse-engineered from behaviour |
+| Direct observation | High | Hook inputs inspected in this project |
+
+Schemas may change between Claude Code versions.
 
 ## File Operation Tools
+
+Per-tool `tool_input` fields, grouped as Claude Code groups its tools.
 
 ### Read
 
@@ -246,7 +277,7 @@ Terminates a background shell.
 
 ## Agent Tools
 
-### Task
+### Task (now `Agent`)
 
 Launches a subagent for complex tasks.
 
@@ -344,15 +375,3 @@ mcp__.*           # All MCP tools
 mcp__github__.*   # All GitHub MCP tools
 ```
 
-## Fields Used by This Hook
-
-The `claude-code-permissions-hook` currently extracts these fields for rule matching:
-
-| Tool(s) | Field | Used For |
-|---------|-------|----------|
-| Read, Write, Edit, Glob | `file_path` | Path-based allow/deny rules |
-| Bash | `command` | Command pattern matching |
-| Task | `subagent_type` | Agent type restrictions |
-| Task | `prompt` | Prompt content filtering |
-
-See `src/matcher.rs` for implementation details.

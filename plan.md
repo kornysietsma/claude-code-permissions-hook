@@ -15,7 +15,7 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Current state (after step 7.1)
+## Current state (after step 7.2)
 
 Both agents are supported end to end: config loading, all six matchers, tiered decisions, Claude and Copilot adapters, error handling and auditing (records are written by `main`). What remains is examples and docs (7), and verification against the real agents (8, 9).
 
@@ -43,8 +43,8 @@ Both agents are supported end to end: config loading, all six matchers, tiered d
 
 ### Interim files (replaced later)
 
-- `examples/{claude,copilot,mermaid-claude}.toml` are the example configs (tested in `tests/examples.rs`); the docs rewritten in 7.2 still link to the deleted `example.toml`.
-- `README.md`, `docs/configuration-guide.md`, `docs/tool-input-schemas.md`, `tests/README.md` still describe the old design (rewritten in 7.2). `AGENTS.md` has an interim code-structure section pointing at `spec.md`.
+- `examples/{claude,copilot,mermaid-claude}.toml` are the example configs (tested in `tests/examples.rs`).
+- Docs (`README.md`, `docs/configuration-guide.md`, `docs/claude-tool-inputs.md`, `docs/copilot-tool-inputs.md`, `tests/README.md`, `AGENTS.md`) are rewritten for the new design in 7.2.
 - `docs/review-findings.md`: pre-rework findings; bug numbers there are referenced from steps below.
 
 ### Dependencies
@@ -126,7 +126,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
   - Delete `example.toml` and `sample-mermaid-hook.toml`.
   - **Verify:** a test validates every file in `examples/` with the right agent with no warnings, and the mermaid scenario acceptance tests run against `examples/mermaid-claude.toml`.
 
-- [ ] **7.2 Docs rewrite**
+- [x] **7.2 Docs rewrite**
   - Rewrite `README.md` and `docs/configuration-guide.md`.
   - Split `docs/tool-input-schemas.md` into `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md`, with the Copilot one marked unverified until phase 9.
   - Rewrite `tests/README.md`, including the `jq` capture one-liner.
@@ -134,7 +134,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
   - Document the `@` escaping rule (`\@` or `[@]`), `glob` being path-style, and `exists = false`.
   - Delete `update-thoughts.md`.
   - **Verify:**
-    - `grep -rn "allow\]\]\|deny\]\]\|_regex =\|claude-code-permissions-hook" --include=*.md .` returns no hits (outside `spec.md`/`plan.md`)
+    - `grep -rnE '\[allow\]\]|\[deny\]\]|(command|file_path|prompt|exclude)_regex|claude-code-permissions-hook' --include='*.md' .` returns no hits outside `spec.md`, `plan.md` and the historical `docs/review-findings.md` (the original `_regex =` pattern also matched the new `not_regex =`)
     - a manual pass checking that the TOML snippets in the docs match the implemented format
     - the user reads the README
 

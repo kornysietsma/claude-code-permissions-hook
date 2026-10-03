@@ -1,297 +1,231 @@
-# Configuration Guide
+# Configuration guide
 
-This guide explains how to configure rules for each supported tool in the permissions hook.
+The full reference for a `tool-gate-hook` config file. For a quick start see the [README](../README.md); for ready-to-copy configs see [`examples/`](../examples/).
 
-## Overview
+A config is a TOML file with three parts: an optional `[audit]` table, an optional `[patterns]` table of named regexes, and any number of `[[rule]]` entries. Every config is for **one agent** (`--agent claude` or `--agent copilot`); write one file per agent.
 
-Rules are defined in TOML format with two types:
-- `[[allow]]` - Permits tool use when matched (checked after deny rules)
-- `[[deny]]` - Blocks tool use when matched (checked first, takes precedence)
+Check a config with:
 
-Each rule specifies:
-- `tool` - The tool name to match
-- A regex field for the value to match (tool-specific)
-- An optional exclude regex to reject matches containing certain patterns
+```bash
+tool-gate-hook validate --agent claude --config path/to/claude.toml
+```
 
-## Supported Tools
+`validate` exits non-zero on any error and prints a summary (rule counts per decision, pattern names, audit settings). It also **warns** (exit 0) when a rule's field path doesn't start with a payload key known for that agent, which catches rules copied between agents.
 
-### File Path Tools: Read, Write, Edit, Glob
+## Writing regexes in TOML
 
-These tools operate on file paths. The hook extracts the `file_path` field from the tool input.
+Write regexes as **single-quoted literal strings**, which need no backslash doubling:
 
-**Available fields:**
-| Field | Description |
-|-------|-------------|
-| `file_path_regex` | Pattern the file path must match |
-| `file_path_exclude_regex` | Pattern that rejects the match if found |
-
-**Example: Allow reading files in a project directory**
 ```toml
-[[allow]]
-tool = "Read"
-file_path_regex = "^/Users/myname/projects/.*"
+regex = '^cargo (build|test)\b'     # good
+regex = "^cargo (build|test)\\b"    # same thing, harder to read
 ```
 
-**Example: Allow writes but block sensitive files**
-```toml
-[[allow]]
-tool = "Write"
-file_path_regex = "^/Users/myname/projects/.*"
-file_path_exclude_regex = "\\.(env|secret|key|pem)$"
-```
-
-**Example: Block reading outside home directory**
-```toml
-[[deny]]
-tool = "Read"
-file_path_regex = "^/(?!Users/myname/).*"
-```
-
-**Example: Prevent path traversal attacks**
-```toml
-[[allow]]
-tool = "Edit"
-file_path_regex = "^/safe/directory/.*"
-file_path_exclude_regex = "\\.\\."  # Block ../ sequences
-```
-
-**Tool input reference:**
-```json
-{
-  "file_path": "/absolute/path/to/file.txt",
-  "content": "...",      // Write only
-  "old_string": "...",   // Edit only
-  "new_string": "...",   // Edit only
-  "pattern": "..."       // Glob only (not matched by this hook)
-}
-```
-
-### Command Tool: Bash
-
-The Bash tool executes shell commands. The hook extracts the `command` field.
-
-**Available fields:**
-| Field | Description |
-|-------|-------------|
-| `command_regex` | Pattern the command must match |
-| `command_exclude_regex` | Pattern that rejects the match if found |
-
-**Example: Allow specific build commands**
-```toml
-[[allow]]
-tool = "Bash"
-command_regex = "^cargo (build|test|check|clippy|fmt|run)"
-```
-
-**Example: Allow git commands but prevent force push**
-```toml
-[[allow]]
-tool = "Bash"
-command_regex = "^git "
-command_exclude_regex = "push.*--force|push.*-f"
-```
-
-**Example: Block dangerous commands**
-```toml
-[[deny]]
-tool = "Bash"
-command_regex = "^rm .*-rf"
-
-[[deny]]
-tool = "Bash"
-command_regex = "^sudo "
-```
-
-**Example: Prevent shell injection in allowed commands**
-```toml
-[[allow]]
-tool = "Bash"
-command_regex = "^npm (install|test|run)"
-command_exclude_regex = "&|;|\\||`|\\$\\(|>"  # Block shell metacharacters
-```
-
-**Common shell injection patterns to exclude:**
-- `&` - Background/chain commands
-- `;` - Command separator
-- `|` - Pipe to another command
-- `` ` `` - Command substitution (backticks)
-- `$(` - Command substitution
-- `>` - Output redirection
-
-**Tool input reference:**
-```json
-{
-  "command": "cargo build --release",
-  "description": "Build release binary",
-  "timeout": 120000
-}
-```
-
-### Agent Tool: Task
-
-The Task tool spawns subagents. The hook can match on `subagent_type` or `prompt`.
-
-**Available fields:**
-| Field | Description |
-|-------|-------------|
-| `subagent_type` | Exact match on the subagent type (not regex) |
-| `prompt_regex` | Pattern the prompt must match |
-| `prompt_exclude_regex` | Pattern that rejects the match if found |
-
-**Example: Allow specific agent types**
-```toml
-[[allow]]
-tool = "Task"
-subagent_type = "Explore"
-
-[[allow]]
-tool = "Task"
-subagent_type = "codebase-analyzer"
-```
-
-**Example: Block general-purpose agents**
-```toml
-[[deny]]
-tool = "Task"
-subagent_type = "general-purpose"
-```
-
-**Example: Allow agents but filter prompts**
-```toml
-[[allow]]
-tool = "Task"
-subagent_type = "Explore"
-prompt_regex = ".*"
-prompt_exclude_regex = "password|secret|credential"
-```
-
-**Known subagent types** (may change between versions):
-- `general-purpose` - Full tool access
-- `Explore` - Codebase exploration
-- `Plan` - Architecture planning
-- `codebase-analyzer` - Code analysis
-- `codebase-locator` - File/component location
-- `statusline-setup` - Status line configuration
-
-**Tool input reference:**
-```json
-{
-  "description": "Search for auth code",
-  "prompt": "Find all authentication-related code",
-  "subagent_type": "Explore"
-}
-```
-
-## Rule Matching Logic
-
-1. **Deny rules are checked first** - If any deny rule matches, the tool is blocked
-2. **Allow rules are checked second** - If any allow rule matches, the tool is permitted
-3. **No match means passthrough** - Normal Claude Code permission flow applies
-
-For each rule:
-1. Tool name must match exactly
-2. Main regex must match the extracted field
-3. Exclude regex (if specified) must NOT match
-
-## Auditing Configuration
-
-Configure auditing in the `[audit]` section:
+## `[audit]`
 
 ```toml
 [audit]
-audit_file = "/tmp/claude-tool-use.json"
-audit_level = "matched"  # off | matched | all
+file = "/tmp/tool-gate-hook-claude.jsonl"
+level = "matched"        # off | matched | all
+max_value_len = 1024     # 0 = never truncate
 ```
 
-| Level | Description |
-|-------|-------------|
-| `off` | No auditing |
-| `matched` | Record only allow/deny decisions (default) |
-| `all` | Record everything including passthrough |
+Optional. Leaving it out disables auditing. When present, `file` is required (its directory must already exist), `level` defaults to `matched` and `max_value_len` to `1024`.
 
-## Complete Example
+| `level` | Records |
+|---------|---------|
+| `off` | nothing |
+| `matched` | calls where at least one rule matched, plus all error records |
+| `all` | every call, including passthroughs |
+
+See [Audit log](#audit-log) for the record format.
+
+## `[patterns]`
+
+Named regexes, reusable in `regex` and `not_regex`:
 
 ```toml
-[audit]
-audit_file = "/tmp/claude-tool-use.json"
-audit_level = "matched"
-
-# === DENY RULES (checked first) ===
-
-# Block dangerous commands
-[[deny]]
-tool = "Bash"
-command_regex = "^rm .*-rf"
-
-[[deny]]
-tool = "Bash"
-command_regex = "^sudo "
-
-# Protect sensitive files
-[[deny]]
-tool = "Read"
-file_path_regex = "\\.(env|pem|key)$"
-
-[[deny]]
-tool = "Write"
-file_path_regex = "\\.(env|pem|key)$"
-
-# === ALLOW RULES (checked after deny) ===
-
-# Allow reading project files (with path traversal protection)
-[[allow]]
-tool = "Read"
-file_path_regex = "^/Users/myname/projects/.*"
-file_path_exclude_regex = "\\.\\."
-
-# Allow writing to project files
-[[allow]]
-tool = "Write"
-file_path_regex = "^/Users/myname/projects/.*"
-file_path_exclude_regex = "\\.\\."
-
-# Allow editing project files
-[[allow]]
-tool = "Edit"
-file_path_regex = "^/Users/myname/projects/.*"
-file_path_exclude_regex = "\\.\\."
-
-# Allow glob in project directory
-[[allow]]
-tool = "Glob"
-file_path_regex = "^/Users/myname/projects/.*"
-
-# Allow safe build commands
-[[allow]]
-tool = "Bash"
-command_regex = "^cargo (build|test|check|clippy|fmt|run)"
-command_exclude_regex = "&|;|\\||`|\\$\\("
-
-# Allow git commands (no force push)
-[[allow]]
-tool = "Bash"
-command_regex = "^git "
-command_exclude_regex = "push.*--force|push.*-f"
-
-# Allow codebase exploration agents
-[[allow]]
-tool = "Task"
-subagent_type = "Explore"
-
-[[allow]]
-tool = "Task"
-subagent_type = "codebase-analyzer"
+[patterns]
+shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
+parent_dir  = '\.\.'
 ```
 
-## Tips
+Patterns belong to the config file that defines them. Every pattern is compiled when the config loads, so a broken one is an error even if no rule uses it. [`examples/claude.toml`](../examples/claude.toml) ships commented `shell_chain` and `parent_dir` definitions to copy.
 
-1. **Start restrictive** - Begin with specific allow rules rather than broad permissions
-2. **Use exclude patterns** - They simplify rules by handling edge cases
-3. **Test with audit_level = "all"** - See what's passing through to identify gaps
-4. **Check the audit log** - Review `/tmp/claude-tool-use.json` to understand patterns
-5. **Validate config** - Run `claude-code-permissions-hook validate --config your.toml`
+## `[[rule]]`
 
-## See Also
+```toml
+[[rule]]
+decision = "allow"                       # required: allow | deny | ask
+tool = "Bash"                            # optional: regex on the tool name
+description = "npx mermaid-cli mmdc"     # optional: shown in logs and default reasons
+reason = "..."                           # optional: what the agent is told on deny/ask
+match."tool_input.command" = { regex = '^npx ', not_regex = "@shell_chain" }
+```
 
-- [Tool Input Schemas](./tool-input-schemas.md) - Complete reference for all Claude Code tool inputs
-- [example.toml](../example.toml) - Working example configuration
+| Key | Meaning |
+|-----|---------|
+| `decision` | Required. `allow`, `deny` or `ask`. |
+| `tool` | A regex, **anchored** as `^(?:…)$` against the tool name, so `Read` doesn't match `ReadFile`. Use `Read\|Write` for either. Omit it to match any tool. Claude's names are capitalised (`Bash`), Copilot's lowercase (`bash`); matching is case-sensitive. |
+| `description` | Free text used in audit records, validate warnings and default reasons. |
+| `reason` | Returned to the agent as the decision reason. Default: `tool-gate-hook: <decision> by rule #<index>` plus ` (<description>)` when there is one. A reason is always sent for `deny` and `ask`. |
+| `match` | A table keyed by dotted field path. All entries must pass (**AND**); for OR, write separate rules. A rule with no `match` entries matches on `tool` alone. |
+
+Unknown keys anywhere in a rule are errors, so a typo like `comand` can't silently disable a rule.
+
+### Field paths
+
+Each `match` key is a dotted path into the **raw payload** the agent sends, so any field can be matched: `tool_input.command`, `toolArgs.path`, `cwd`, `permission_mode`, `agent_type`, and so on. See [Claude payloads](./claude-tool-inputs.md) and [Copilot payloads](./copilot-tool-inputs.md).
+
+- A path walks objects by key. A **missing** path makes the matcher fail (the rule doesn't match), except for `exists = false`.
+- Strings are matched as they are. Numbers and booleans are matched against their JSON text (`120000`, `true`). `null`, arrays and objects only work with `exists`.
+- Quote the path in TOML: `match."tool_input.command" = { … }`.
+
+## Matchers
+
+Each field takes a table of matchers. **All matchers given must pass.**
+
+| Matcher | Value | Passes when |
+|---------|-------|-------------|
+| `regex` | string or list | The value matches (an unanchored search: write `^` and `$` yourself). With a list, **any** item matching is enough. |
+| `not_regex` | string or list | **No** item matches. This is the safety net: an excluded call makes the rule *not match*; it does not become a deny. |
+| `equals` | string | The value is exactly this string. |
+| `glob` | string | The value matches this glob, e.g. `**/*.rs`. Path-style: `*` does not cross `/`, `**` does. For simple path checks; use `regex` for commands. |
+| `under` | list of strings | The value is a path inside any listed directory (see [`under`](#under)). |
+| `exists` | bool | The field is present (`true`) or absent (`false`). The only matcher that can pass on a missing field. |
+
+An empty matcher table (`match."x" = {}`) or an empty list (`regex = []`) is a config error.
+
+```toml
+# Either extension, but never a path that climbs upwards
+match."tool_input.file_path" = { regex = ['\.md$', '\.txt$'], not_regex = "@parent_dir" }
+
+# Only subagent calls (agent_id is absent for the main agent)
+match."agent_id" = { exists = true }
+```
+
+### Pattern references and `@`
+
+A list item (or string) starting with `@` is always a **pattern reference** to `[patterns]`. An unknown name is a config error. A regex that genuinely starts with a literal `@` must be written `\@` or `[@]`:
+
+```toml
+regex = '\@mention'     # a literal @
+regex = '[@]mention'    # also fine
+regex = '@mention'      # error: unknown pattern @mention
+```
+
+### `under`
+
+`under` checks that a path lies inside one of the listed directories:
+
+```toml
+match."tool_input.file_path" = { under = ["{cwd}", "~/notes", "/tmp/mermaid"] }
+```
+
+- In the listed directories, `~` (alone or before `/`) is the home directory and `{cwd}` is the payload's `cwd`.
+- A relative value is resolved against the payload's `cwd`.
+- The path is **resolved the way the OS would**: the longest existing prefix is canonicalised (following symlinks, applying `..`), and only the not-yet-existing remainder is cleaned up textually, so a `Write` to a new file works. A symlink inside an allowed directory that points outside it does not escape the check, and `/tmp/mermaid/../secret` is not under `/tmp/mermaid`.
+- Containment is by path component: `/tmp/mermaid2` is not under `/tmp/mermaid`.
+- The listed directories are canonicalised the same way (so `/tmp` and macOS's `/private/tmp` agree).
+
+Prefer `under` to a regex for path checks; it doesn't need a `parent_dir` safety net.
+
+## How decisions are made
+
+1. **Every** rule is evaluated, in file order, and all matches are collected.
+2. The final decision is tiered, **deny > ask > allow**, regardless of file order.
+3. The deciding rule is the first matching rule (in file order) with the winning decision, and its reason is used.
+4. No rule matching means **passthrough**: nothing is printed and the agent's normal permission flow applies.
+
+So a deny anywhere in the file beats any allow, and an `ask` forces a prompt even when an allow rule also matches. Use that to carve exceptions out of broad allows.
+
+Shell chaining (`a && b`) is deliberately not parsed. Instead, give allow rules a `not_regex = "@shell_chain"` so a chained command makes the rule not match, and the call falls through to the user.
+
+## Errors and failure behaviour
+
+`tool-gate-hook run` **always exits 0**: Copilot treats any non-zero exit as a deny, and Claude treats exit 2 as a block. (A missing or unknown `--agent` is a command-line error and does exit 2; it shows up as soon as you edit the hook registration.)
+
+| Situation | Behaviour |
+|-----------|-----------|
+| Config can't be loaded (missing file, bad TOML, invalid regex or glob, unknown `@pattern`, unknown key) | Output **`ask`** with the reason `tool-gate-hook config error (<path>): <details>`, and the same on stderr. Loud, but never locks you out. |
+| stdin isn't valid JSON, or isn't from the `--agent` you configured | Passthrough, a warning on stderr, and an error record in the audit log if the config loads. Checked before the config, so a payload meant for another agent passes quietly even when the config is broken. |
+| Audit file can't be written | A warning on stderr; the decision is unaffected. |
+
+Diagnostics go to stderr; set `RUST_LOG=debug` for more.
+
+## Audit log
+
+One JSON object per line, appended under a file lock, so two hooks (for example a user-level and a project-level registration) can share one file; the `config` field tells their records apart.
+
+```json
+{
+  "ts": "2026-10-03T17:42:01.123+10:00",
+  "agent": "claude",
+  "config": "/Users/someone/.config/tool-gate-hook/claude.toml",
+  "decision": "allow",
+  "decided_by": { "index": 3, "description": "rm mermaid test files" },
+  "matches": [ { "index": 3, "decision": "allow", "description": "rm mermaid test files" } ],
+  "payload": { "...": "the raw stdin JSON" },
+  "duration_us": 412
+}
+```
+
+- `decision` is `allow`, `ask`, `deny` or `passthrough`; `decided_by` is left out on passthrough. Rule `index` is the 1-based position in the file; `matches` lists every matching rule in order.
+- String values in `payload` longer than `max_value_len` characters are cut and end with `…[truncated, N chars]`. Keys and structure are never dropped. `max_value_len = 0` keeps everything, which is how you capture real payloads when a new agent version arrives.
+- If stdin wasn't usable, `payload` is the raw text (truncated the same way) and an `error` field says why.
+- `ts` is when the hook started, with the local offset.
+
+## Worked examples
+
+### Claude: allow a safe command, with a shell-chaining safety net
+
+```toml
+[patterns]
+shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
+
+[[rule]]
+decision = "allow"
+tool = "Bash"
+description = "cargo workflow"
+match."tool_input.command" = { regex = '^cargo (build|test|check|clippy|fmt|run)\b', not_regex = "@shell_chain" }
+```
+
+`cargo test` is allowed. `cargo test && curl evil.example` makes the rule not match, so Claude asks you as usual.
+
+### Claude: limit writes to a directory, and deny secrets
+
+```toml
+[[rule]]
+decision = "allow"
+tool = "Write|Edit"
+description = "edits inside the project"
+match."tool_input.file_path" = { under = ["{cwd}"] }
+
+[[rule]]
+decision = "deny"
+tool = "Read|Write|Edit"
+reason = "Secrets files are off limits"
+match."tool_input.file_path" = { regex = '\.(env|secret)$' }
+```
+
+Editing `{cwd}/.env` matches both rules; deny wins, whatever the order.
+
+### Copilot: the same idea
+
+```toml
+[[rule]]
+decision = "allow"
+tool = "bash"
+description = "cargo workflow"
+match."toolArgs.command" = { regex = '^cargo (build|test|check)\b', not_regex = "@shell_chain" }
+```
+
+Copilot tool names are lowercase and arguments live under `toolArgs`. (The `toolArgs` field names are unverified; see [Copilot payloads](./copilot-tool-inputs.md).)
+
+### A whole workflow
+
+[`examples/mermaid-claude.toml`](../examples/mermaid-claude.toml) is a tightly scoped, illustrative config for generating Mermaid diagrams: an allow-list of exact commands and paths, with `@shell_chain` and `@parent_dir` safety nets. Everything else falls through to the normal prompt.
+
+## Registering the hook
+
+Registration is in the [README](../README.md#registering-the-hook): user level (`~/.claude/settings.json`, `~/.copilot/hooks/tool-gate-hook.json`) or per project, each with its own config file.
