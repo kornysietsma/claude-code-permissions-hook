@@ -3,10 +3,12 @@ use clap::{Parser, Subcommand};
 use env_logger::Env;
 use log::info;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use tool_gate_hook::auditing::audit_tool_use;
 use tool_gate_hook::{
-    Decision, HookInput, HookOutput, load_config, process_hook_input_with_config, validate_config,
+    Agent, Decision, HookInput, HookOutput, load_config, process_hook_input_with_config,
+    validate_config,
 };
 
 #[derive(Debug, Parser)]
@@ -23,20 +25,36 @@ struct Opts {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Run the hook (reads JSON from stdin, outputs decision to stdout)
-    Run {
-        #[clap(short, long, value_parser)]
-        config: PathBuf,
-    },
+    Run(Target),
     /// Validate a configuration file
-    Validate {
-        #[clap(short, long, value_parser)]
-        config: PathBuf,
-    },
+    Validate(Target),
 }
 
-fn run_hook(config_path: PathBuf) -> Result<()> {
-    let (config, deny_rules, allow_rules) =
-        load_config(&config_path).context("Failed to load configuration")?;
+#[derive(Debug, clap::Args)]
+struct Target {
+    #[clap(short, long, value_enum)]
+    agent: Agent,
+    /// Defaults to ~/.config/tool-gate-hook/<agent>.toml
+    #[clap(short, long)]
+    config: Option<PathBuf>,
+}
+
+impl Target {
+    fn config_path(&self) -> Result<PathBuf> {
+        match &self.config {
+            Some(path) => Ok(path.clone()),
+            None => {
+                let home = std::env::home_dir().context("Cannot determine home directory")?;
+                Ok(self.agent.default_config_path(&home))
+            }
+        }
+    }
+}
+
+fn run_hook(target: &Target) -> Result<()> {
+    let config_path = target.config_path()?;
+    let (config, deny_rules, allow_rules) = load_config(&config_path)
+        .with_context(|| format!("Failed to load configuration {}", config_path.display()))?;
 
     let input = HookInput::read_from_stdin().context("Failed to read hook input")?;
 
@@ -72,8 +90,10 @@ fn run_hook(config_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn run_validate_config(config_path: PathBuf) -> Result<()> {
-    let (deny_count, allow_count) = validate_config(&config_path)?;
+fn run_validate_config(target: &Target) -> Result<()> {
+    let config_path = target.config_path()?;
+    let (deny_count, allow_count) = validate_config(&config_path)
+        .with_context(|| format!("Invalid configuration {}", config_path.display()))?;
 
     let config = tool_gate_hook::Config::load_from_file(&config_path)?;
 
@@ -86,14 +106,23 @@ fn run_validate_config(config_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    // Initialize diagnostic logger from RUST_LOG env var (default: warn)
+fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("warn")).init();
 
-    let opts = Opts::parse();
-
-    match opts.command {
-        Commands::Run { config } => run_hook(config),
-        Commands::Validate { config } => run_validate_config(config),
+    match Opts::parse().command {
+        // A non-zero exit is a deny in Copilot, so `run` reports errors on stderr and passes through
+        Commands::Run(target) => {
+            if let Err(e) = run_hook(&target) {
+                eprintln!("tool-gate-hook: {e:#}");
+            }
+            ExitCode::SUCCESS
+        }
+        Commands::Validate(target) => match run_validate_config(&target) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tool-gate-hook: {e:#}");
+                ExitCode::FAILURE
+            }
+        },
     }
 }

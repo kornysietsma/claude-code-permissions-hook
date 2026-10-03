@@ -18,6 +18,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+tempfile = "3.27.0"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -239,13 +239,14 @@ Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
 
 ## Error handling
 
-`run` **always exits 0**. Copilot treats non-zero as deny, and Claude ignores non-zero, so exit codes are never used to signal decisions.
+`run` **always exits 0** once its arguments parse. Copilot treats any non-zero exit as deny and Claude treats exit 2 as block, so exit codes are never used to signal decisions.
 
 | Situation | Behaviour |
 |---|---|
 | Config error (missing explicit or default file, bad TOML, invalid regex/glob, unknown `@pattern`, unknown matcher key) | Output **`ask`** with reason `tool-gate-hook config error (<path>): <details>`, plus stderr. Loud but never locks you out — chosen because a config may break long after you've forgotten the hook exists. |
 | Malformed stdin JSON / payload doesn't match `--agent` | Passthrough (no output), audit an error record, stderr warning. |
 | Audit write failure | stderr only; decision unaffected. |
+| Invalid command-line arguments (e.g. missing or unknown `--agent`) | clap error on stderr, **exit 2** — deliberately blocking (Claude treats exit 2 as block, Copilot as deny). This only happens right after editing a hook registration, so it surfaces immediately; without a valid `--agent` no well-formed `ask` can be produced anyway. |
 
 ## Testing
 

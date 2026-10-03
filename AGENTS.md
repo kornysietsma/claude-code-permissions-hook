@@ -16,10 +16,10 @@ cargo build
 cargo build --release
 
 # Run the application (validate config)
-cargo run -- validate --config example.toml
+cargo run -- validate --agent claude --config example.toml
 
 # Run as hook (reads JSON from stdin)
-cat tests/read_allowed.json | cargo run -- run --config example.toml
+cat tests/read_allowed.json | cargo run -- run --agent claude --config tests/test_config.toml
 
 # Run tests
 cargo test

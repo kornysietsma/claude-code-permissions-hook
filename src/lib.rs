@@ -3,6 +3,7 @@
 //! This library provides the core logic for evaluating tool use permissions
 //! based on configurable allow/deny rules with regex pattern matching.
 
+pub mod agent;
 pub mod auditing;
 pub mod config;
 pub mod hook_io;
@@ -11,6 +12,7 @@ pub mod matcher;
 use anyhow::{Context, Result};
 use std::path::Path;
 
+pub use agent::Agent;
 pub use auditing::Decision;
 pub use config::{Config, Rule};
 pub use hook_io::{HookInput, HookOutput};

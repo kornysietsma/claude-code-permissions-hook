@@ -110,7 +110,7 @@ Claude verification on this machine uses a **scratch project** with the hook reg
   - Change the package and binary name to `tool-gate-hook` and the library crate to `tool_gate_hook`. Update the `use` paths, the clap `about` text and `AGENTS.md` (name and commands only; the full rewrite is in 7.2).
   - **Verify:** the quality gate passes, and `cargo run -- validate --config example.toml` works under the new name.
 
-- [ ] **1.2 New CLI shape**
+- [x] **1.2 New CLI shape**
   - Make `--agent claude|copilot` required on `run` and `validate`, and `--config` optional.
   - The default config is `home/.config/tool-gate-hook/<agent>.toml`.
   - `run` always exits 0. Any error goes to stderr, and the call passes through until 2.3 adds the "ask" behaviour.
