@@ -1,35 +1,25 @@
+# Interim example in the new format; replaced by examples/*.toml in plan step 7.1
 [audit]
-audit_file = "/tmp/claude-tool-use.json"
-# Audit level: off, matched (default), all
-# - off: no auditing
-# - matched: audit only tool use that hits a rule (allow/deny)
-# - all: audit everything including passthrough
-audit_level = "matched"
+file = "/tmp/tool-gate-hook-claude.jsonl"
+level = "matched"
 
-# Allow rules - checked after deny rules
-[[allow]]
-tool = "Read"
-file_path_regex = "^/Users/korny/prj/.*"
-file_path_exclude_regex = "\\.\\."
+[patterns]
+shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
+parent_dir = '\.\.'
 
-[[allow]]
+[[rule]]
+decision = "allow"
 tool = "Bash"
-command_regex = "^cargo (build|test|check|clippy|fmt|run)"
-command_exclude_regex = "&|;|\\||`|\\$\\("
+description = "safe cargo commands"
+match."tool_input.command" = { regex = '^cargo (build|test|check|clippy|fmt|run)\b', not_regex = "@shell_chain" }
 
-[[allow]]
-tool = "Task"
-subagent_type = "codebase-analyzer"
-
-# Deny rules - checked first (take precedence)
-[[deny]]
+[[rule]]
+decision = "deny"
 tool = "Bash"
-command_regex = "^rm .*-rf"
+reason = "Recursive force-delete is not allowed"
+match."tool_input.command" = { regex = '^rm .*-rf' }
 
-[[deny]]
+[[rule]]
+decision = "deny"
 tool = "Read"
-file_path_regex = "\\.(env|secret)$"
-
-[[deny]]
-tool = "Read"
-file_path_regex = ".*\\.\\./.*"
+match."tool_input.file_path" = { regex = '\.(env|secret)$' }

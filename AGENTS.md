@@ -19,7 +19,7 @@ cargo build --release
 cargo run -- validate --agent claude --config example.toml
 
 # Run as hook (reads JSON from stdin)
-cat tests/read_allowed.json | cargo run -- run --agent claude --config tests/test_config.toml
+cat tests/read_allowed.json | cargo run -- run --agent claude --config example.toml
 
 # Run tests
 cargo test
@@ -45,44 +45,23 @@ cargo fmt
 
 ## Code Structure
 
-- **src/main.rs**: Entry point with CLI (run/validate commands) using clap subcommands
-- **src/config.rs**: TOML configuration loading and regex compilation
-- **src/hook_io.rs**: JSON serialization/deserialization for hook protocol
-- **src/matcher.rs**: Rule matching logic with deny-first precedence
-- **src/logging.rs**: Thread-safe file logging using flock
+Mid-rework (see `spec.md` and `plan.md`, which are the source of truth for the target design and progress):
+
+- **src/main.rs**: CLI (`run` / `validate`, required `--agent`), all I/O; `run` always exits 0
+- **src/agent.rs**: `Agent` enum (claude/copilot), default config paths
+- **src/config.rs**: TOML parsing (`[audit]`, `[patterns]`, `[[rule]]`) and compilation to a `Policy`
+- **src/policy.rs**: compiled rule types and `Decision` (allow < ask < deny)
+- **src/hook_io.rs**, **src/auditing.rs**: legacy, replaced in plan steps 2.2 and 5.1
 
 ## Important Details
 
 ### Hook Protocol
 
-The hook reads JSON from stdin with this structure:
-```json
-{
-  "session_id": "abc123",
-  "tool_name": "Read|Bash|Task|etc",
-  "tool_input": { "file_path": "...", "command": "...", etc }
-}
-```
-
-And outputs decisions to stdout:
-```json
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow|deny",
-    "permissionDecisionReason": "..."
-  },
-  "suppressOutput": true
-}
-```
+See `spec.md` ("Agent adapters") for both agents' input and output formats.
 
 ### Rule Matching
 
-- **Deny rules** are checked first and take precedence
-- **Allow rules** are checked second
-- Rules support main regex and exclude regex patterns
-- Supported tools: Read, Write, Edit, Glob (file_path), Bash (command), Task (subagent_type, prompt)
-- No match = no output (passthrough to normal Claude Code permission flow)
+See `spec.md` ("Configuration" and "Decision logic"): every rule is evaluated, the final decision is tiered deny > ask > allow, and no match means passthrough (no output).
 
 ### Logging
 - Log level configured in TOML via `log_level` (trace, debug, info, warn, error). Default: `info`

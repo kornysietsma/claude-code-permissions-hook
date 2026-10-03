@@ -119,7 +119,7 @@ Claude verification on this machine uses a **scratch project** with the hook reg
 
 ### Phase 2: New engine (Claude only)
 
-- [ ] **2.1 Config model and compilation**
+- [x] **2.1 Config model and compilation**
   - New `config.rs` covering `[audit]` (`file`, `level`, `max_value_len` defaulting to 1024), `[patterns]`, and `[[rule]]` (`decision`, `tool`, `description`, `reason`, `match`).
   - In this step `match` supports only `regex` and `not_regex`, each taking a string or a list, with `@name` references.
   - Use `deny_unknown_fields` throughout, so a typo in a matcher key is an error.

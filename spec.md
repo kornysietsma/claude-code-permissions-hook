@@ -134,6 +134,10 @@ reason = "Secrets files are off limits"
 match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 ```
 
+### Audit section
+
+`[audit]` is optional; omitting it disables auditing. When present, `file` is required, `level` defaults to `matched` and `max_value_len` to `1024`.
+
 ### Rules
 
 - `decision` — required, `allow | deny | ask`.
@@ -159,7 +163,7 @@ match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 | `under` | list of strings | Value is a path; passes if it lies inside any listed directory (see below). |
 | `exists` | bool | Field present / absent. |
 
-List items starting with `@` reference a `[patterns]` entry. Unknown names, invalid regexes or invalid globs are config errors (reported by `validate` and at load).
+List items starting with `@` reference a `[patterns]` entry. Unknown names, invalid regexes or invalid globs are config errors (reported by `validate` and at load). An item starting with `@` is always a pattern reference; a regex that genuinely starts with `@` must be written `\@` or `[@]`. An empty matcher table (`match."x" = {}`) or empty list (`regex = []`) is a config error.
 
 ### `under` semantics
 
@@ -171,7 +175,7 @@ List items starting with `@` reference a `[patterns]` entry. Unknown names, inva
 
 ### Named patterns
 
-`[patterns]` maps names to regex strings. They are per config file (user and project configs do not share patterns). The example configs ship well-commented `shell_chain` and `parent_dir` definitions to copy.
+`[patterns]` maps names to regex strings. They are per config file (user and project configs do not share patterns). The example configs ship well-commented `shell_chain` and `parent_dir` definitions to copy. Every pattern is compiled at load, so a broken pattern is an error even if no rule uses it.
 
 ## Decision logic
 

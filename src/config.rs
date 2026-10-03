@@ -1,181 +1,190 @@
-use anyhow::{Context, Result};
+use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule};
+use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Config {
-    pub audit: AuditConfig,
-    #[serde(default)]
-    pub allow: Vec<RuleConfig>,
-    #[serde(default)]
-    pub deny: Vec<RuleConfig>,
+    pub audit: Option<AuditConfig>,
+    pub policy: Policy,
 }
 
-/// Controls what gets written to the audit log file.
-#[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditConfig {
+    pub file: PathBuf,
+    #[serde(default)]
+    pub level: AuditLevel,
+    #[serde(default = "default_max_value_len")]
+    pub max_value_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AuditLevel {
-    /// No audit logging
     Off,
-    /// Log only tool use that matches a rule (default)
     #[default]
     Matched,
-    /// Log all tool use including passthrough
     All,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct AuditConfig {
-    pub audit_file: PathBuf,
+fn default_max_value_len() -> usize {
+    1024
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    audit: Option<AuditConfig>,
     #[serde(default)]
-    pub audit_level: AuditLevel,
+    patterns: BTreeMap<String, String>,
+    // Kept as tables so each rule can be parsed with its index in error messages
+    #[serde(default, rename = "rule")]
+    rules: Vec<toml::Table>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct RuleConfig {
-    pub tool: String,
-    pub file_path_regex: Option<String>,
-    pub file_path_exclude_regex: Option<String>,
-    pub command_regex: Option<String>,
-    pub command_exclude_regex: Option<String>,
-    pub subagent_type: Option<String>,
-    pub subagent_type_exclude_regex: Option<String>,
-    pub prompt_regex: Option<String>,
-    pub prompt_exclude_regex: Option<String>,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRule {
+    decision: Decision,
+    tool: Option<String>,
+    description: Option<String>,
+    reason: Option<String>,
+    #[serde(default, rename = "match")]
+    fields: BTreeMap<String, RawFieldMatch>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Rule {
-    pub tool: String,
-    pub file_path_regex: Option<Regex>,
-    pub file_path_exclude_regex: Option<Regex>,
-    pub command_regex: Option<Regex>,
-    pub command_exclude_regex: Option<Regex>,
-    pub subagent_type: Option<String>,
-    pub subagent_type_exclude_regex: Option<Regex>,
-    pub prompt_regex: Option<Regex>,
-    pub prompt_exclude_regex: Option<Regex>,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFieldMatch {
+    regex: Option<OneOrMany>,
+    not_regex: Option<OneOrMany>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged, expecting = "expected a string or a list of strings")]
+enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            OneOrMany::One(item) => vec![item],
+            OneOrMany::Many(items) => items,
+        }
+    }
 }
 
 impl Config {
-    pub fn load_from_file(path: &Path) -> Result<Self> {
+    pub fn load(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-
-        let config: Config = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse TOML config: {}", path.display()))?;
-
-        Ok(config)
+            .with_context(|| format!("cannot read config {}", path.display()))?;
+        Self::from_toml(&contents).with_context(|| format!("invalid config {}", path.display()))
     }
 
-    pub fn compile_rules(&self) -> Result<(Vec<Rule>, Vec<Rule>)> {
-        let deny_rules = self
-            .deny
-            .iter()
-            .map(compile_rule)
-            .collect::<Result<Vec<_>>>()
-            .context("Failed to compile deny rules")?;
-
-        let allow_rules = self
-            .allow
-            .iter()
-            .map(compile_rule)
-            .collect::<Result<Vec<_>>>()
-            .context("Failed to compile allow rules")?;
-
-        Ok((deny_rules, allow_rules))
+    pub fn from_toml(contents: &str) -> Result<Self> {
+        let raw: RawConfig = toml::from_str(contents)?;
+        let patterns = compile_patterns(&raw.patterns)?;
+        let rules = raw
+            .rules
+            .into_iter()
+            .enumerate()
+            .map(|(i, table)| compile_rule(i + 1, table, &patterns))
+            .collect::<Result<_>>()?;
+        Ok(Config {
+            audit: raw.audit,
+            policy: Policy { rules },
+        })
     }
 }
 
-fn compile_rule(rule_config: &RuleConfig) -> Result<Rule> {
-    let file_path_regex = rule_config
-        .file_path_regex
-        .as_ref()
-        .map(|s| Regex::new(s))
-        .transpose()
-        .context("Invalid file_path_regex")?;
+fn compile_patterns(patterns: &BTreeMap<String, String>) -> Result<BTreeMap<&str, Regex>> {
+    patterns
+        .iter()
+        .map(|(name, pattern)| {
+            let regex = Regex::new(pattern).with_context(|| format!("pattern {name}"))?;
+            Ok((name.as_str(), regex))
+        })
+        .collect()
+}
 
-    let file_path_exclude_regex = rule_config
-        .file_path_exclude_regex
-        .as_ref()
-        .map(|s| Regex::new(s))
-        .transpose()
-        .context("Invalid file_path_exclude_regex")?;
+fn compile_rule(
+    index: usize,
+    table: toml::Table,
+    patterns: &BTreeMap<&str, Regex>,
+) -> Result<Rule> {
+    let description = table
+        .get("description")
+        .and_then(|d| d.as_str())
+        .map(|d| format!(" ({d})"))
+        .unwrap_or_default();
+    let context = || format!("rule #{index}{description}");
 
-    let command_regex = rule_config
-        .command_regex
-        .as_ref()
-        .map(|s| Regex::new(s))
+    let raw: RawRule = table.try_into().with_context(context)?;
+    let tool = raw
+        .tool
+        .map(|tool| Regex::new(&format!("^(?:{tool})$")))
         .transpose()
-        .context("Invalid command_regex")?;
-
-    let command_exclude_regex = rule_config
-        .command_exclude_regex
-        .as_ref()
-        .map(|s| Regex::new(s))
-        .transpose()
-        .context("Invalid command_exclude_regex")?;
-
-    let subagent_type_exclude_regex = rule_config
-        .subagent_type_exclude_regex
-        .as_ref()
-        .map(|s| Regex::new(s))
-        .transpose()
-        .context("Invalid subagent_type_exclude_regex")?;
-
-    let prompt_regex = rule_config
-        .prompt_regex
-        .as_ref()
-        .map(|s| Regex::new(s))
-        .transpose()
-        .context("Invalid prompt_regex")?;
-
-    let prompt_exclude_regex = rule_config
-        .prompt_exclude_regex
-        .as_ref()
-        .map(|s| Regex::new(s))
-        .transpose()
-        .context("Invalid prompt_exclude_regex")?;
+        .with_context(|| format!("{}: tool", context()))?;
+    let fields = raw
+        .fields
+        .into_iter()
+        .map(|(path, field)| {
+            let matchers = compile_field(field, patterns)
+                .with_context(|| format!("{}: match.\"{path}\"", context()))?;
+            Ok(FieldCondition { path, matchers })
+        })
+        .collect::<Result<_>>()?;
 
     Ok(Rule {
-        tool: rule_config.tool.clone(),
-        file_path_regex,
-        file_path_exclude_regex,
-        command_regex,
-        command_exclude_regex,
-        subagent_type: rule_config.subagent_type.clone(),
-        subagent_type_exclude_regex,
-        prompt_regex,
-        prompt_exclude_regex,
+        index,
+        decision: raw.decision,
+        tool,
+        description: raw.description,
+        reason: raw.reason,
+        fields,
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[test]
-    fn test_compile_rule() -> Result<()> {
-        let rule_config = RuleConfig {
-            tool: "Read".to_string(),
-            file_path_regex: Some(r"^/home/.*".to_string()),
-            file_path_exclude_regex: Some(r"\.\.".to_string()),
-            command_regex: None,
-            command_exclude_regex: None,
-            subagent_type: None,
-            subagent_type_exclude_regex: None,
-            prompt_regex: None,
-            prompt_exclude_regex: None,
-        };
-
-        let rule = compile_rule(&rule_config)?;
-        assert_eq!(rule.tool, "Read");
-        assert!(rule.file_path_regex.is_some());
-        assert!(rule.file_path_exclude_regex.is_some());
-
-        Ok(())
+fn compile_field(
+    field: RawFieldMatch,
+    patterns: &BTreeMap<&str, Regex>,
+) -> Result<Vec<FieldMatcher>> {
+    let mut matchers = Vec::new();
+    if let Some(regex) = field.regex {
+        matchers.push(FieldMatcher::Regex(
+            compile_regexes(regex, patterns).context("regex")?,
+        ));
     }
+    if let Some(not_regex) = field.not_regex {
+        matchers.push(FieldMatcher::NotRegex(
+            compile_regexes(not_regex, patterns).context("not_regex")?,
+        ));
+    }
+    if matchers.is_empty() {
+        bail!("no matchers given");
+    }
+    Ok(matchers)
+}
+
+fn compile_regexes(items: OneOrMany, patterns: &BTreeMap<&str, Regex>) -> Result<Vec<Regex>> {
+    let items = items.into_vec();
+    if items.is_empty() {
+        bail!("empty list");
+    }
+    items
+        .iter()
+        .map(|item| match item.strip_prefix('@') {
+            Some(name) => patterns
+                .get(name)
+                .cloned()
+                .ok_or_else(|| anyhow!("unknown pattern @{name}")),
+            None => Ok(Regex::new(item)?),
+        })
+        .collect()
 }

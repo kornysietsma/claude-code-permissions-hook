@@ -5,11 +5,9 @@ use log::info;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tool_gate_hook::auditing::audit_tool_use;
-use tool_gate_hook::{
-    Agent, Decision, HookInput, HookOutput, load_config, process_hook_input_with_config,
-    validate_config,
-};
+use tool_gate_hook::auditing::{Decision, audit_tool_use};
+use tool_gate_hook::hook_io::HookInput;
+use tool_gate_hook::{Agent, Config};
 
 #[derive(Debug, Parser)]
 #[clap(
@@ -52,57 +50,28 @@ impl Target {
 }
 
 fn run_hook(target: &Target) -> Result<()> {
-    let config_path = target.config_path()?;
-    let (config, deny_rules, allow_rules) = load_config(&config_path)
-        .with_context(|| format!("Failed to load configuration {}", config_path.display()))?;
-
+    let config = Config::load(&target.config_path()?)?;
     let input = HookInput::read_from_stdin().context("Failed to read hook input")?;
 
-    let result = process_hook_input_with_config(&config, &input)?;
-
-    // Audit the decision
-    audit_tool_use(
-        &config.audit.audit_file,
-        config.audit.audit_level,
-        &input,
-        result.decision,
-        result.reason.as_deref(),
-    );
-
-    // Output decision to stdout (passthrough = no output)
-    match result.decision {
-        Decision::Allow => {
-            let output = HookOutput::allow(result.reason.unwrap_or_default());
-            output.write_to_stdout()?;
-        }
-        Decision::Deny => {
-            let output = HookOutput::deny(result.reason.unwrap_or_default());
-            output.write_to_stdout()?;
-        }
-        Decision::Passthrough => {
-            // No output for passthrough
-        }
+    // Rule evaluation arrives in plan step 2.2; until then every call passes through
+    if let Some(audit) = &config.audit {
+        audit_tool_use(
+            &audit.file,
+            audit.level,
+            &input,
+            Decision::Passthrough,
+            None,
+        );
     }
-
-    // Suppress unused variable warning - rules are used for config validation
-    let _ = (deny_rules, allow_rules);
-
     Ok(())
 }
 
 fn run_validate_config(target: &Target) -> Result<()> {
-    let config_path = target.config_path()?;
-    let (deny_count, allow_count) = validate_config(&config_path)
-        .with_context(|| format!("Invalid configuration {}", config_path.display()))?;
-
-    let config = tool_gate_hook::Config::load_from_file(&config_path)?;
-
-    info!("Configuration is valid!");
-    info!("  Deny rules: {}", deny_count);
-    info!("  Allow rules: {}", allow_count);
-    info!("  Audit file: {}", config.audit.audit_file.display());
-    info!("  Audit level: {:?}", config.audit.audit_level);
-
+    let config = Config::load(&target.config_path()?)?;
+    info!(
+        "Configuration is valid: {} rules",
+        config.policy.rules.len()
+    );
     Ok(())
 }
 
