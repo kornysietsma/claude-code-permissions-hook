@@ -7,10 +7,13 @@ mod paths;
 pub mod policy;
 
 pub use agent::Agent;
+pub use auditing::AuditRecord;
 pub use config::Config;
 
 use agent::ToolCall;
 use anyhow::{Context as _, Result};
+use auditing::Evaluated;
+use chrono::{DateTime, FixedOffset, Local};
 use policy::Decision;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -19,6 +22,16 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct Context {
     pub home: PathBuf,
+    pub clock: fn() -> DateTime<FixedOffset>,
+}
+
+impl Context {
+    pub fn new(home: PathBuf) -> Self {
+        Context {
+            home,
+            clock: || Local::now().fixed_offset(),
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -27,10 +40,13 @@ pub struct Outcome {
     pub output: Option<Value>,
     /// Problems to report on stderr
     pub warnings: Vec<String>,
+    /// Where to append which record, if the config's audit level asks for one
+    pub audit: Option<(PathBuf, AuditRecord)>,
 }
 
 /// Evaluates one hook payload. Never fails: errors become warnings plus a passthrough or an `ask`
 pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> Outcome {
+    let started = (context.clock)();
     let (payload, call) = match parse_payload(agent, stdin) {
         Ok(parsed) => parsed,
         Err(e) => {
@@ -43,11 +59,23 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
     match Config::load(config_path) {
         Ok(config) => {
             let evaluation = config.policy.evaluate(&payload, &call, context);
+            let audit = config.audit.and_then(|audit| {
+                let evaluated = Evaluated {
+                    agent,
+                    config_path,
+                    payload: &payload,
+                    evaluation: &evaluation,
+                    started,
+                    finished: (context.clock)(),
+                };
+                AuditRecord::for_evaluation(&audit, &evaluated).map(|record| (audit.file, record))
+            });
             Outcome {
                 output: evaluation
                     .decided_by()
                     .map(|rule| agent.render(rule.decision, &rule.reason())),
                 warnings: vec![],
+                audit,
             }
         }
         Err(e) => {
@@ -58,6 +86,7 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
             Outcome {
                 output: Some(agent.render(Decision::Ask, &reason)),
                 warnings: vec![reason],
+                audit: None,
             }
         }
     }
@@ -74,6 +103,7 @@ impl Outcome {
         Outcome {
             output: None,
             warnings: vec![warning],
+            audit: None,
         }
     }
 }

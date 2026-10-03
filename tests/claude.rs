@@ -28,9 +28,7 @@ fn run_claude_outcome(config: &str, stdin: &str) -> Outcome {
 }
 
 fn no_home() -> Context {
-    Context {
-        home: PathBuf::from("/nonexistent-home"),
-    }
+    Context::new(PathBuf::from("/nonexistent-home"))
 }
 
 fn run_claude(config: &str, stdin: &str) -> Option<Value> {
@@ -483,9 +481,7 @@ fn run_under(paths: &PathFixture, under: &str, file_path: &str) -> Option<String
         format!("[[rule]]\ndecision = \"allow\"\nmatch.\"tool_input.file_path\" = {{ under = [{under}] }}"),
     )
     .unwrap();
-    let context = Context {
-        home: paths.home.clone(),
-    };
+    let context = Context::new(paths.home.clone());
     let outcome = run(
         Agent::Claude,
         &config_path,

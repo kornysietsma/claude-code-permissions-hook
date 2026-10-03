@@ -15,7 +15,7 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Current state (after step 4.1)
+## Current state (after step 5.1)
 
 The Claude side of the engine is complete: config loading, all six matchers, tiered decisions, error handling. Auditing is **off** until phase 5 (deliberately, rather than stubbed). 
 
@@ -87,10 +87,10 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
 
 ### Phase 5: Auditing
 
-- [ ] **5.1 New audit record**
+- [x] **5.1 New audit record**
   - The spec's JSONL record: `ts` from the clock, `agent`, `config` (canonical path), `decision` including `passthrough`, `decided_by`, `matches`, `payload`, `duration_us`.
   - Levels `off`, `matched` and `all`.
-  - Add `clock` to `Context` (a `Clock` trait with `now() -> DateTime<FixedOffset>`; production uses local time, tests a fixed time) and `audit: Option<(PathBuf, AuditRecord)>` to `Outcome`; `main` writes it. `duration_us` = difference of two clock reads (0 in tests).
+  - Add `clock` to `Context` (built as a plain `fn() -> DateTime<FixedOffset>`, not a trait: production uses local time via `Context::new`, tests a fixed time) and `audit: Option<(PathBuf, AuditRecord)>` to `Outcome`; `main` writes it in 5.3 (`ts` is the start-of-run clock read). `duration_us` = difference of two clock reads (0 in tests).
   - `matches` / `decided_by` entries are `{ index, decision, description }` built from `Evaluation`'s `&Rule`s.
   - **Verify:** acceptance tests compare whole records with a fixed clock for allow, deny, ask, passthrough and multi-match cases, plus level filtering (passthrough is not recorded at `matched` but is at `all`, and `off` records nothing).
 

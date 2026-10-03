@@ -53,7 +53,7 @@ fn run_hook(target: &Target) -> Result<()> {
     io::stdin()
         .read_to_string(&mut stdin)
         .context("cannot read stdin")?;
-    let context = Context { home: home()? };
+    let context = Context::new(home()?);
     let config_path = target.config_path(&context.home);
     let outcome = tool_gate_hook::run(target.agent, &config_path, &stdin, &context);
     for warning in &outcome.warnings {

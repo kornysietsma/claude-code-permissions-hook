@@ -19,9 +19,7 @@ fn run_outcome(agent: Agent, config: &str, stdin: &str) -> Outcome {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("config.toml");
     fs::write(&config_path, config).unwrap();
-    let context = Context {
-        home: PathBuf::from("/nonexistent-home"),
-    };
+    let context = Context::new(PathBuf::from("/nonexistent-home"));
     run(agent, &config_path, stdin, &context)
 }
 

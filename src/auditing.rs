@@ -1,4 +1,114 @@
-// Audit records are rebuilt in plan step 5.1; only the truncation helper survives until then
+//! Audit records: one JSON line per hook invocation (writing arrives in plan step 5.3)
+
+use crate::agent::Agent;
+use crate::config::{AuditConfig, AuditLevel};
+use crate::policy::{Decision, Evaluation, Rule};
+use chrono::{DateTime, FixedOffset, SecondsFormat};
+use serde::Serialize;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, PartialEq, Serialize)]
+pub struct AuditRecord {
+    ts: String,
+    agent: &'static str,
+    config: PathBuf,
+    decision: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decided_by: Option<DecidedBy>,
+    matches: Vec<MatchedRule>,
+    payload: Value,
+    duration_us: i64,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+struct DecidedBy {
+    index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+struct MatchedRule {
+    index: usize,
+    decision: Decision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+impl From<&Rule> for DecidedBy {
+    fn from(rule: &Rule) -> Self {
+        DecidedBy {
+            index: rule.index,
+            description: rule.description.clone(),
+        }
+    }
+}
+
+impl From<&Rule> for MatchedRule {
+    fn from(rule: &Rule) -> Self {
+        MatchedRule {
+            index: rule.index,
+            decision: rule.decision,
+            description: rule.description.clone(),
+        }
+    }
+}
+
+impl AuditConfig {
+    fn records(&self, any_rule_matched: bool) -> bool {
+        match self.level {
+            AuditLevel::Off => false,
+            AuditLevel::Matched => any_rule_matched,
+            AuditLevel::All => true,
+        }
+    }
+}
+
+/// What an evaluated call looked like, for the audit log
+pub struct Evaluated<'a> {
+    pub agent: Agent,
+    pub config_path: &'a Path,
+    pub payload: &'a Value,
+    pub evaluation: &'a Evaluation<'a>,
+    pub started: DateTime<FixedOffset>,
+    pub finished: DateTime<FixedOffset>,
+}
+
+impl AuditRecord {
+    /// The record to write, or `None` when the configured level skips this call
+    pub fn for_evaluation(config: &AuditConfig, evaluated: &Evaluated<'_>) -> Option<Self> {
+        let Evaluated {
+            agent,
+            config_path,
+            payload,
+            evaluation,
+            started,
+            finished,
+        } = evaluated;
+        let decided_by = evaluation.decided_by();
+        config
+            .records(!evaluation.matches.is_empty())
+            .then(|| AuditRecord {
+                ts: started.to_rfc3339_opts(SecondsFormat::Millis, false),
+                agent: agent.name(),
+                config: config_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| config_path.to_path_buf()),
+                decision: decided_by.map_or("passthrough", |rule| rule.decision.as_str()),
+                decided_by: decided_by.map(DecidedBy::from),
+                matches: evaluation
+                    .matches
+                    .iter()
+                    .map(|rule| MatchedRule::from(*rule))
+                    .collect(),
+                payload: (*payload).clone(),
+                duration_us: (*finished - *started)
+                    .num_microseconds()
+                    .unwrap_or(i64::MAX),
+            })
+    }
+}
 
 /// Recursively truncate string fields in a JSON value that exceed `max_len` characters.
 pub fn truncate_json_strings(value: &serde_json::Value, max_len: usize) -> serde_json::Value {
