@@ -128,3 +128,70 @@ fn copilot_run_exits_zero_on_claude_payload() {
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stdout.is_empty());
 }
+
+fn audited_config(dir: &Path, audit_file: &Path) -> std::path::PathBuf {
+    let config = dir.join("claude.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[audit]\nfile = '{}'\nlevel = \"all\"\n\n[[rule]]\ndecision = \"allow\"\ntool = \"Bash\"\n",
+            audit_file.display()
+        ),
+    )
+    .unwrap();
+    config
+}
+
+#[test]
+fn run_appends_one_json_line_per_call_to_the_audit_file() {
+    let dir = TempDir::new().unwrap();
+    let audit_file = dir.path().join("audit.jsonl");
+    let config = audited_config(dir.path(), &audit_file);
+    let args = [
+        "run",
+        "--agent",
+        "claude",
+        "--config",
+        config.to_str().unwrap(),
+    ];
+
+    tool_gate_hook(dir.path(), &args, BASH_PAYLOAD);
+    tool_gate_hook(dir.path(), &args, BASH_PAYLOAD);
+
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&audit_file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["decision"], "allow");
+    assert_eq!(lines[0]["payload"]["tool_name"], "Bash");
+}
+
+#[test]
+fn unwritable_audit_file_only_warns() {
+    let dir = TempDir::new().unwrap();
+    let audit_file = dir.path().join("no-such-dir/audit.jsonl");
+    let config = audited_config(dir.path(), &audit_file);
+
+    let output = tool_gate_hook(
+        dir.path(),
+        &[
+            "run",
+            "--agent",
+            "claude",
+            "--config",
+            config.to_str().unwrap(),
+        ],
+        BASH_PAYLOAD,
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout["hookSpecificOutput"]["permissionDecision"], "allow");
+    assert!(
+        stderr(&output).contains("cannot write audit record"),
+        "{}",
+        stderr(&output)
+    );
+}

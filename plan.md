@@ -15,7 +15,7 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Current state (after step 5.2)
+## Current state (after step 5.3)
 
 The Claude side of the engine is complete: config loading, all six matchers, tiered decisions, error handling. Auditing is **off** until phase 5 (deliberately, rather than stubbed). 
 
@@ -101,7 +101,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
   - Start from the existing `auditing::truncate_json_strings` (currently appends a bare `…`, no length).
   - **Verify:** unit tests for truncation (nested, arrays, non-strings unchanged, char counting rather than bytes, the marker contents). Acceptance tests show a long `Write` content being truncated while all keys are kept, `0` keeping the full content, and malformed and mismatched payloads producing error records.
 
-- [ ] **5.3 Audit writing**
+- [x] **5.3 Audit writing**
   - `audit::append` uses `OpenOptions` append and `File::lock`, writing one line per record.
   - Write failures produce a stderr warning only.
   - **Verify:** a smoke test runs twice against the same audit file and finds two valid JSON lines. An unwritable audit path still gives the correct decision on stdout and exit code 0. No concurrency test: two configs sharing one log file is rare, and `flock` is trusted.

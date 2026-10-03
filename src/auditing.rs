@@ -1,11 +1,14 @@
-//! Audit records: one JSON line per hook invocation (writing arrives in plan step 5.3)
+//! Audit records: one JSON line per hook invocation
 
 use crate::agent::Agent;
 use crate::config::{AuditConfig, AuditLevel};
 use crate::policy::{Decision, Evaluation, Rule};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use serde::Serialize;
 use serde_json::Value;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -135,6 +138,20 @@ impl AuditRecord {
                 .unwrap_or(i64::MAX),
         }
     }
+}
+
+/// Appends the record as one line, holding an exclusive lock so concurrent hooks don't interleave
+pub fn append(file: &Path, record: &AuditRecord) -> Result<()> {
+    let mut line = serde_json::to_string(record)?;
+    line.push('\n');
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+        .with_context(|| format!("cannot open {}", file.display()))?;
+    log.lock()?;
+    log.write_all(line.as_bytes())
+        .with_context(|| format!("cannot write {}", file.display()))
 }
 
 /// Cuts every string longer than `max_len` characters and notes the original length;

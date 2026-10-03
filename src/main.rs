@@ -6,7 +6,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use tool_gate_hook::{Agent, Config, Context};
+use tool_gate_hook::{Agent, Config, Context, auditing};
 
 #[derive(Debug, Parser)]
 #[clap(
@@ -58,6 +58,11 @@ fn run_hook(target: &Target) -> Result<()> {
     let outcome = tool_gate_hook::run(target.agent, &config_path, &stdin, &context);
     for warning in &outcome.warnings {
         eprintln!("{warning}");
+    }
+    if let Some((file, record)) = &outcome.audit
+        && let Err(e) = auditing::append(file, record)
+    {
+        eprintln!("tool-gate-hook: cannot write audit record: {e:#}");
     }
     if let Some(output) = outcome.output {
         println!("{output}");
