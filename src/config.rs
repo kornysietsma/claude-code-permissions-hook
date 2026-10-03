@@ -1,6 +1,3 @@
-#![forbid(unsafe_code)]
-#![warn(clippy::all)]
-
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::Deserialize;

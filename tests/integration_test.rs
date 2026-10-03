@@ -5,9 +5,7 @@
 
 use std::path::PathBuf;
 
-use claude_code_permissions_hook::{
-    Decision, HookInput, HookResult, process_hook_input, validate_config,
-};
+use tool_gate_hook::{Decision, HookInput, HookResult, process_hook_input, validate_config};
 
 /// Helper to get the path to the test config
 fn config_path() -> PathBuf {

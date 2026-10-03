@@ -1,6 +1,3 @@
-#![forbid(unsafe_code)]
-#![warn(clippy::all)]
-
 use crate::config::Rule;
 use crate::hook_io::HookInput;
 use log::{debug, trace};

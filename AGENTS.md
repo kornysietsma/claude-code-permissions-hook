@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Rust project that implements a PreToolUse hook for Claude Code, providing granular control over which tools Claude can use. It features allow/deny rules with regex pattern matching, security exclusions for path traversal and command injection, and thread-safe logging of all tool use.
+This is `tool-gate-hook`, a Rust project that implements a PreToolUse hook for Claude Code (and, in progress, GitHub Copilot CLI), providing granular control over which tools Claude can use. It features allow/deny rules with regex pattern matching, security exclusions for path traversal and command injection, and thread-safe logging of all tool use.
 
 ## Build and Test Commands
 
@@ -95,7 +95,7 @@ And outputs decisions to stdout:
 - Logging is non-fatal - errors won't block tool execution
 
 ### Code Standards
-- Strict linting enabled: `#![forbid(unsafe_code)]`, `#![warn(clippy::all)]`, `#![warn(rust_2018_idioms)]`, `#![warn(rust_2024_compatibility)]`
+- Strict linting configured in the `[lints]` section of `Cargo.toml` (`unsafe_code = "forbid"`, clippy all, rust_2018_idioms, rust_2024_compatibility, deprecated_safe) — do not add `#![…]` lint attributes to source files
 - Tests use `pretty_assertions` for better diff output
 - Error handling via `anyhow::Result`
 - All clippy warnings treated as errors in CI

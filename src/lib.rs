@@ -1,10 +1,4 @@
-#![forbid(unsafe_code)]
-#![warn(clippy::all)]
-#![warn(rust_2018_idioms)]
-#![warn(rust_2024_compatibility)]
-#![warn(deprecated_safe)]
-
-//! Claude Code command permissions hook library.
+//! tool-gate-hook: a PreToolUse hook that gates agent tool use.
 //!
 //! This library provides the core logic for evaluating tool use permissions
 //! based on configurable allow/deny rules with regex pattern matching.

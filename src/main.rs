@@ -1,22 +1,20 @@
-#![forbid(unsafe_code)]
-#![warn(clippy::all)]
-#![warn(rust_2018_idioms)]
-#![warn(rust_2024_compatibility)]
-#![warn(deprecated_safe)]
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use env_logger::Env;
 use log::info;
 use std::path::PathBuf;
 
-use claude_code_permissions_hook::auditing::audit_tool_use;
-use claude_code_permissions_hook::{
+use tool_gate_hook::auditing::audit_tool_use;
+use tool_gate_hook::{
     Decision, HookInput, HookOutput, load_config, process_hook_input_with_config, validate_config,
 };
 
 #[derive(Debug, Parser)]
-#[clap(author, version, about = "Claude Code command permissions hook")]
+#[clap(
+    author,
+    version,
+    about = "PreToolUse hook that gates agent tool use with allow/deny/ask rules"
+)]
 struct Opts {
     #[clap(subcommand)]
     command: Commands,
@@ -77,7 +75,7 @@ fn run_hook(config_path: PathBuf) -> Result<()> {
 fn run_validate_config(config_path: PathBuf) -> Result<()> {
     let (deny_count, allow_count) = validate_config(&config_path)?;
 
-    let config = claude_code_permissions_hook::Config::load_from_file(&config_path)?;
+    let config = tool_gate_hook::Config::load_from_file(&config_path)?;
 
     info!("Configuration is valid!");
     info!("  Deny rules: {}", deny_count);

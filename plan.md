@@ -105,9 +105,10 @@ Claude verification on this machine uses a **scratch project** with the hook reg
 
 ### Phase 1: Rename and CLI
 
-- [ ] **1.1 Rename to `tool-gate-hook`**
+- [x] **1.1 Rename to `tool-gate-hook`**
   - Move the lint attributes into a `[lints.rust]` / `[lints.clippy]` section in `Cargo.toml` (`unsafe_code = "forbid"`, `rust_2018_idioms`, `rust_2024_compatibility`, `deprecated_safe`, `clippy::all`), and delete the `#![…]` attributes from every source file.
-  - Change the package and binary name to `tool-gate-hook` and the library crate to `tool_gate_hook`. Update the `use` paths, the clap `about` text and `AGENTS.md` (name and commands only; the full rewrite is in 8.x).  - **Verify:** the quality gate passes, and `cargo run -- validate --config example.toml` works under the new name.
+  - Change the package and binary name to `tool-gate-hook` and the library crate to `tool_gate_hook`. Update the `use` paths, the clap `about` text and `AGENTS.md` (name and commands only; the full rewrite is in 7.2).
+  - **Verify:** the quality gate passes, and `cargo run -- validate --config example.toml` works under the new name.
 
 - [ ] **1.2 New CLI shape**
   - Make `--agent claude|copilot` required on `run` and `validate`, and `--config` optional.

@@ -1,6 +1,3 @@
-#![forbid(unsafe_code)]
-#![warn(clippy::all)]
-
 use crate::config::AuditLevel;
 use crate::hook_io::HookInput;
 use chrono::{DateTime, Utc};
