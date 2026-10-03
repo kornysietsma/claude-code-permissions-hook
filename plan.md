@@ -15,7 +15,7 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Current state (after step 6.1)
+## Current state (after step 7.1)
 
 Both agents are supported end to end: config loading, all six matchers, tiered decisions, Claude and Copilot adapters, error handling and auditing (records are written by `main`). What remains is examples and docs (7), and verification against the real agents (8, 9).
 
@@ -43,7 +43,7 @@ Both agents are supported end to end: config loading, all six matchers, tiered d
 
 ### Interim files (replaced later)
 
-- `example.toml`: small config in the new format (step 7.1 replaces it with `examples/`). `sample-mermaid-hook.toml` is the old-format reference for the mermaid example.
+- `examples/{claude,copilot,mermaid-claude}.toml` are the example configs (tested in `tests/examples.rs`); the docs rewritten in 7.2 still link to the deleted `example.toml`.
 - `README.md`, `docs/configuration-guide.md`, `docs/tool-input-schemas.md`, `tests/README.md` still describe the old design (rewritten in 7.2). `AGENTS.md` has an interim code-structure section pointing at `spec.md`.
 - `docs/review-findings.md`: pre-rework findings; bug numbers there are referenced from steps below.
 
@@ -120,7 +120,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
 
 ### Phase 7: Examples and docs
 
-- [ ] **7.1 Example configs**
+- [x] **7.1 Example configs**
   - Write `examples/claude.toml`, `examples/copilot.toml` and `examples/mermaid-claude.toml`. The mermaid one is illustrative only.
   - Each has commented `shell_chain` and `parent_dir` patterns.
   - Delete `example.toml` and `sample-mermaid-hook.toml`.

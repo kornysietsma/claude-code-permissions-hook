@@ -1,0 +1,56 @@
+# Example tool-gate-hook config for GitHub Copilot CLI.
+# Copy to ~/.config/tool-gate-hook/copilot.toml and adjust.
+# Validate with: tool-gate-hook validate --agent copilot --config examples/copilot.toml
+#
+# Copilot tool names are lowercase (bash, view, create, edit, glob, ...) and the
+# tool's arguments live under `toolArgs`.
+# UNVERIFIED: the field names inside `toolArgs` (command, path) are best guesses
+# until checked against real captured payloads (plan step 9.2).
+
+[audit]
+file = "/tmp/tool-gate-hook-copilot.jsonl"
+level = "matched"      # off | matched | all
+max_value_len = 1024   # truncate long strings in the log; 0 = never truncate
+
+[patterns]
+# Anything that chains or substitutes another command: ; | ` && & (but not 2>&1) $(
+# Use as `not_regex = "@shell_chain"` so an allow rule never matches a chained command.
+shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
+# Any ".." path segment; stops an allowed prefix being escaped by navigating upwards
+parent_dir = '\.\.'
+
+[[rule]]
+decision = "allow"
+tool = "bash"
+description = "cargo workflow"
+match."toolArgs.command" = { regex = '^cargo (build|test|check|clippy|fmt|run)\b', not_regex = "@shell_chain" }
+
+[[rule]]
+decision = "allow"
+tool = "bash"
+description = "read-only git"
+match."toolArgs.command" = { regex = '^git (status|diff|log|show)\b', not_regex = "@shell_chain" }
+
+[[rule]]
+decision = "allow"
+tool = "view|glob"
+description = "reads inside the project"
+match."toolArgs.path" = { under = ["{cwd}"] }
+
+[[rule]]
+decision = "ask"
+tool = "bash"
+description = "git push"
+match."toolArgs.command" = { regex = '^git push\b' }
+
+[[rule]]
+decision = "deny"
+tool = "bash"
+reason = "Recursive force-delete is not allowed"
+match."toolArgs.command" = { regex = '^rm .*-rf' }
+
+[[rule]]
+decision = "deny"
+tool = "view|edit|create"
+reason = "Secrets files are off limits"
+match."toolArgs.path" = { regex = '\.(env|secret)$' }

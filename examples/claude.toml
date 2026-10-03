@@ -1,0 +1,55 @@
+# Example tool-gate-hook config for Claude Code.
+# Copy to ~/.config/tool-gate-hook/claude.toml and adjust.
+# Validate with: tool-gate-hook validate --agent claude --config examples/claude.toml
+
+[audit]
+file = "/tmp/tool-gate-hook-claude.jsonl"
+level = "matched"      # off | matched | all
+max_value_len = 1024   # truncate long strings in the log; 0 = never truncate
+
+[patterns]
+# Anything that chains or substitutes another command: ; | ` && & (but not 2>&1) $(
+# Use as `not_regex = "@shell_chain"` so an allow rule never matches a chained command.
+shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
+# Any ".." path segment; stops an allowed prefix being escaped by navigating upwards
+parent_dir = '\.\.'
+
+# Allow: read-only inspection and the usual Rust workflow, without chaining
+[[rule]]
+decision = "allow"
+tool = "Bash"
+description = "cargo workflow"
+match."tool_input.command" = { regex = '^cargo (build|test|check|clippy|fmt|run)\b', not_regex = "@shell_chain" }
+
+[[rule]]
+decision = "allow"
+tool = "Bash"
+description = "read-only git"
+match."tool_input.command" = { regex = '^git (status|diff|log|show)\b', not_regex = "@shell_chain" }
+
+# Allow: reading anywhere inside the project
+[[rule]]
+decision = "allow"
+tool = "Read|Glob|Grep"
+description = "reads inside the project"
+match."tool_input.file_path" = { under = ["{cwd}"] }
+
+# Ask: always prompt for these, even if another rule would allow them
+[[rule]]
+decision = "ask"
+tool = "Bash"
+description = "git push"
+match."tool_input.command" = { regex = '^git push\b' }
+
+# Deny: the model is told why
+[[rule]]
+decision = "deny"
+tool = "Bash"
+reason = "Recursive force-delete is not allowed"
+match."tool_input.command" = { regex = '^rm .*-rf' }
+
+[[rule]]
+decision = "deny"
+tool = "Read|Edit|Write"
+reason = "Secrets files are off limits"
+match."tool_input.file_path" = { regex = '\.(env|secret)$' }

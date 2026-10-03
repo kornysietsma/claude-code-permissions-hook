@@ -16,10 +16,10 @@ cargo build
 cargo build --release
 
 # Run the application (validate config)
-cargo run -- validate --agent claude --config example.toml
+cargo run -- validate --agent claude --config examples/claude.toml
 
 # Run as hook (reads JSON from stdin)
-cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config example.toml
+cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config examples/claude.toml
 
 # Run tests
 cargo test
@@ -86,7 +86,7 @@ See `spec.md` ("Configuration" and "Decision logic"): every rule is evaluated, t
 ### Testing
 - Unit tests in each module
 - Integration test inputs in `tests/` directory
-- Example config in `example.toml`
+- Example configs in `examples/`
 - Coverage goal: enough to be confident things work, not exhaustive. Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity (concurrency, process orchestration, elaborate setup)
 
 ### Project knowledge
