@@ -3,7 +3,8 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-use tool_gate_hook::{Agent, Config, Outcome, run};
+use tool_gate_hook::agent::ToolCall;
+use tool_gate_hook::{Agent, Config, Context, Outcome, run};
 
 fn fixture(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -23,7 +24,13 @@ fn run_claude_outcome(config: &str, stdin: &str) -> Outcome {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("claude.toml");
     fs::write(&config_path, config).unwrap();
-    run(Agent::Claude, &config_path, stdin)
+    run(Agent::Claude, &config_path, stdin, &no_home())
+}
+
+fn no_home() -> Context {
+    Context {
+        home: PathBuf::from("/nonexistent-home"),
+    }
 }
 
 fn run_claude(config: &str, stdin: &str) -> Option<Value> {
@@ -142,7 +149,11 @@ match."tool_input.command" = { regex = 'test' }
     )
     .unwrap();
     let payload: Value = serde_json::from_str(&fixture("bash")).unwrap();
-    let evaluation = config.policy.evaluate(&payload, "Bash");
+    let call = ToolCall {
+        tool_name: "Bash".into(),
+        cwd: PathBuf::from("/"),
+    };
+    let evaluation = config.policy.evaluate(&payload, &call, &no_home());
 
     assert_eq!(
         evaluation
@@ -290,6 +301,7 @@ fn missing_config_file_asks() {
         Agent::Claude,
         Path::new("/nonexistent/claude.toml"),
         &fixture("bash"),
+        &no_home(),
     );
 
     assert_eq!(decision(&outcome.output), Some("ask"));
@@ -428,4 +440,148 @@ match."tool_input.file_path" = { glob = "src/[unclosed" }
 
     assert_eq!(decision(&output), Some("ask"));
     assert!(reason(&output).contains("glob"), "{}", reason(&output));
+}
+
+struct PathFixture {
+    _root: TempDir,
+    home: PathBuf,
+    project: PathBuf,
+    outside: PathBuf,
+}
+
+/// root/home/project/{src/main.rs, escape -> root/outside}, root/outside/secret.txt
+fn path_fixture() -> PathFixture {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let project = home.join("project");
+    let outside = root.path().join("outside");
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(project.join("src/main.rs"), "").unwrap();
+    fs::write(outside.join("secret.txt"), "").unwrap();
+    std::os::unix::fs::symlink(&outside, project.join("escape")).unwrap();
+    PathFixture {
+        _root: root,
+        home,
+        project,
+        outside,
+    }
+}
+
+fn read_in(paths: &PathFixture, file_path: &str) -> String {
+    let payload = with_field("read", &["tool_input", "file_path"], json!(file_path));
+    let mut payload: Value = serde_json::from_str(&payload).unwrap();
+    payload["cwd"] = json!(paths.project);
+    payload.to_string()
+}
+
+fn run_under(paths: &PathFixture, under: &str, file_path: &str) -> Option<String> {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("claude.toml");
+    fs::write(
+        &config_path,
+        format!("[[rule]]\ndecision = \"allow\"\nmatch.\"tool_input.file_path\" = {{ under = [{under}] }}"),
+    )
+    .unwrap();
+    let context = Context {
+        home: paths.home.clone(),
+    };
+    let outcome = run(
+        Agent::Claude,
+        &config_path,
+        &read_in(paths, file_path),
+        &context,
+    );
+    decision(&outcome.output).map(str::to_owned)
+}
+
+fn allowed(paths: &PathFixture, under: &str, file_path: impl AsRef<Path>) -> bool {
+    run_under(paths, under, file_path.as_ref().to_str().unwrap()).as_deref() == Some("allow")
+}
+
+#[test]
+fn under_allows_existing_and_not_yet_existing_files_inside_the_directory() {
+    let paths = path_fixture();
+    let project = format!("{:?}", paths.project);
+
+    assert!(allowed(&paths, &project, paths.project.join("src/main.rs")));
+    assert!(allowed(
+        &paths,
+        &project,
+        paths.project.join("src/new/file.rs")
+    ));
+    assert!(!allowed(&paths, &project, paths.outside.join("secret.txt")));
+}
+
+#[test]
+fn under_is_not_fooled_by_parent_directory_segments() {
+    let paths = path_fixture();
+    let project = format!("{:?}", paths.project);
+
+    assert!(!allowed(
+        &paths,
+        &project,
+        paths.project.join("src/../../../outside/secret.txt")
+    ));
+    assert!(!allowed(
+        &paths,
+        &project,
+        paths
+            .project
+            .join("src/missing/../../../outside/secret.txt")
+    ));
+    assert!(allowed(
+        &paths,
+        &project,
+        paths.project.join("src/../src/main.rs")
+    ));
+}
+
+#[test]
+fn under_follows_symlinks_out_of_the_directory() {
+    let paths = path_fixture();
+    let project = format!("{:?}", paths.project);
+
+    assert!(!allowed(
+        &paths,
+        &project,
+        paths.project.join("escape/secret.txt")
+    ));
+    assert!(!allowed(
+        &paths,
+        &project,
+        paths.project.join("escape/new.txt")
+    ));
+    // Textual cleanup would give project/secret.txt; the OS resolves escape first, giving root/secret.txt
+    assert!(!allowed(
+        &paths,
+        &project,
+        paths.project.join("escape/../secret.txt")
+    ));
+}
+
+#[test]
+fn under_compares_whole_path_components() {
+    let paths = path_fixture();
+    let sibling = paths.home.join("project2/file.rs");
+
+    assert!(!allowed(&paths, &format!("{:?}", paths.project), sibling));
+}
+
+#[test]
+fn under_expands_cwd_and_home_and_resolves_relative_values_against_cwd() {
+    let paths = path_fixture();
+
+    assert!(allowed(
+        &paths,
+        r#""{cwd}""#,
+        paths.project.join("src/main.rs")
+    ));
+    assert!(allowed(
+        &paths,
+        r#""~/project/src""#,
+        paths.project.join("src/main.rs")
+    ));
+    assert!(allowed(&paths, r#""{cwd}/src""#, "src/main.rs"));
+    assert!(!allowed(&paths, r#""{cwd}/src""#, "../outside.txt"));
 }

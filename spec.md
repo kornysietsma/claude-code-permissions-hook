@@ -167,9 +167,9 @@ List items starting with `@` reference a `[patterns]` entry. Unknown names, inva
 
 ### `under` semantics
 
-- Expansions in listed directories: `~` → home directory, `{cwd}` → the adapter-extracted payload `cwd`.
+- Expansions in listed directories: `~` (alone or followed by `/`) → home directory, `{cwd}` → the adapter-extracted payload `cwd` (required in the payload; a payload without it is treated as not from this agent).
 - Relative values are resolved against payload `cwd`.
-- The value is normalised lexically (`.` and `..` removed), then symlinks are resolved on the longest existing ancestor (so not-yet-existing files for `Write`/`create` work).
+- The longest **existing** prefix of the raw path is canonicalised first (following symlinks, with `..` applied the way the OS does), and only the not-yet-existing remainder is cleaned up textually (so not-yet-existing files for `Write`/`create` work). Cleaning up `..` textually first would be unsafe: with `/safe/link -> /etc/foo`, `/safe/link/../secret` looks like `/safe/secret` but the OS reaches `/etc/secret`.
 - Containment is checked by path components, not string prefix (`/tmp/mermaid2` is not under `/tmp/mermaid`).
 - Listed directories are canonicalised the same way.
 

@@ -3,15 +3,23 @@
 pub mod agent;
 pub mod auditing;
 pub mod config;
+mod paths;
 pub mod policy;
 
 pub use agent::Agent;
 pub use config::Config;
 
-use anyhow::{Context, Result};
+use agent::ToolCall;
+use anyhow::{Context as _, Result};
 use policy::Decision;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Facts about the environment, injected so that tests control them
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub home: PathBuf,
+}
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Outcome {
@@ -22,8 +30,8 @@ pub struct Outcome {
 }
 
 /// Evaluates one hook payload. Never fails: errors become warnings plus a passthrough or an `ask`
-pub fn run(agent: Agent, config_path: &Path, stdin: &str) -> Outcome {
-    let (payload, tool_name) = match parse_payload(agent, stdin) {
+pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> Outcome {
+    let (payload, call) = match parse_payload(agent, stdin) {
         Ok(parsed) => parsed,
         Err(e) => {
             return Outcome::passthrough_with_warning(format!(
@@ -34,7 +42,7 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str) -> Outcome {
 
     match Config::load(config_path) {
         Ok(config) => {
-            let evaluation = config.policy.evaluate(&payload, &tool_name);
+            let evaluation = config.policy.evaluate(&payload, &call, context);
             Outcome {
                 output: evaluation
                     .decided_by()
@@ -55,10 +63,10 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str) -> Outcome {
     }
 }
 
-fn parse_payload(agent: Agent, stdin: &str) -> Result<(Value, String)> {
+fn parse_payload(agent: Agent, stdin: &str) -> Result<(Value, ToolCall)> {
     let payload: Value = serde_json::from_str(stdin).context("stdin is not valid JSON")?;
-    let tool_name = agent.tool_name(&payload)?;
-    Ok((payload, tool_name))
+    let call = agent.parse(&payload)?;
+    Ok((payload, call))
 }
 
 impl Outcome {

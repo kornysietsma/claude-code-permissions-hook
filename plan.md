@@ -156,7 +156,7 @@ Claude verification on this machine uses a **scratch project** with the hook reg
   - Add `globset` and compile globs when the config loads; a bad glob is a config error.
   - **Verify:** acceptance tests show each matcher passing and failing, `exists = false` on a missing field matching, several matchers on one field being ANDed, and a bad glob producing a config error that becomes `ask`.
 
-- [ ] **3.2 `under`**
+- [x] **3.2 `under`**
   - `paths.rs` provides `~` expansion from `Context.home`, `{cwd}` from `ToolCall.cwd`, resolution of relative values against cwd, lexical normalisation, canonicalisation of the longest existing ancestor, and component containment. Listed directories are canonicalised the same way.
   - **Verify:**
     - unit tests in `paths.rs`

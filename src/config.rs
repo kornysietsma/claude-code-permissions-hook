@@ -66,6 +66,7 @@ struct RawFieldMatch {
     equals: Option<String>,
     glob: Option<String>,
     exists: Option<bool>,
+    under: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +180,12 @@ fn compile_field(
             .context("glob")?
             .compile_matcher();
         matchers.push(FieldMatcher::Glob(matcher));
+    }
+    if let Some(under) = field.under {
+        if under.is_empty() {
+            bail!("under: empty list");
+        }
+        matchers.push(FieldMatcher::Under(under));
     }
     if let Some(exists) = field.exists {
         matchers.push(FieldMatcher::Exists(exists));

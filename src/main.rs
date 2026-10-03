@@ -1,12 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 use env_logger::Env;
 use log::info;
 use std::io::{self, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use tool_gate_hook::{Agent, Config};
+use tool_gate_hook::{Agent, Config, Context};
 
 #[derive(Debug, Parser)]
 #[clap(
@@ -37,15 +37,15 @@ struct Target {
 }
 
 impl Target {
-    fn config_path(&self) -> Result<PathBuf> {
-        match &self.config {
-            Some(path) => Ok(path.clone()),
-            None => {
-                let home = std::env::home_dir().context("Cannot determine home directory")?;
-                Ok(self.agent.default_config_path(&home))
-            }
-        }
+    fn config_path(&self, home: &Path) -> PathBuf {
+        self.config
+            .clone()
+            .unwrap_or_else(|| self.agent.default_config_path(home))
     }
+}
+
+fn home() -> Result<PathBuf> {
+    std::env::home_dir().context("cannot determine home directory")
 }
 
 fn run_hook(target: &Target) -> Result<()> {
@@ -53,7 +53,9 @@ fn run_hook(target: &Target) -> Result<()> {
     io::stdin()
         .read_to_string(&mut stdin)
         .context("cannot read stdin")?;
-    let outcome = tool_gate_hook::run(target.agent, &target.config_path()?, &stdin);
+    let context = Context { home: home()? };
+    let config_path = target.config_path(&context.home);
+    let outcome = tool_gate_hook::run(target.agent, &config_path, &stdin, &context);
     for warning in &outcome.warnings {
         eprintln!("{warning}");
     }
@@ -64,7 +66,7 @@ fn run_hook(target: &Target) -> Result<()> {
 }
 
 fn run_validate_config(target: &Target) -> Result<()> {
-    let path = target.config_path()?;
+    let path = target.config_path(&home()?);
     let config =
         Config::load(&path).with_context(|| format!("invalid config {}", path.display()))?;
     info!(

@@ -24,8 +24,8 @@ impl Agent {
             .join(format!("{}.toml", self.name()))
     }
 
-    /// Extracts the tool name, or explains why the payload isn't from this agent
-    pub fn tool_name(self, payload: &Value) -> Result<String> {
+    /// Extracts what the engine needs, or explains why the payload isn't from this agent
+    pub fn parse(self, payload: &Value) -> Result<ToolCall> {
         match self {
             Agent::Claude => {
                 if let Some(event) = payload.get("hook_event_name")
@@ -33,11 +33,10 @@ impl Agent {
                 {
                     bail!("not a PreToolUse payload (hook_event_name = {event})");
                 }
-                payload
-                    .get("tool_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .ok_or_else(|| anyhow!("no string tool_name; not a Claude Code payload"))
+                Ok(ToolCall {
+                    tool_name: string_field(payload, "tool_name")?,
+                    cwd: PathBuf::from(string_field(payload, "cwd")?),
+                })
             }
             Agent::Copilot => bail!("Copilot support arrives in plan step 4.1"),
         }
@@ -59,6 +58,20 @@ impl Agent {
             }),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    pub tool_name: String,
+    pub cwd: PathBuf,
+}
+
+fn string_field(payload: &Value, key: &str) -> Result<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("no string {key}; not a Claude Code payload"))
 }
 
 #[cfg(test)]

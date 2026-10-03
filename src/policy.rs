@@ -1,8 +1,12 @@
+use crate::Context;
+use crate::agent::ToolCall;
+use crate::paths;
 use globset::GlobMatcher;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -41,6 +45,8 @@ pub enum FieldMatcher {
     NotRegex(Vec<Regex>),
     Equals(String),
     Glob(GlobMatcher),
+    /// Unexpanded directories; `~` and `{cwd}` depend on the call being evaluated
+    Under(Vec<String>),
     /// The only matcher that can pass when the field is missing
     Exists(bool),
 }
@@ -63,23 +69,26 @@ impl Evaluation<'_> {
 }
 
 impl Policy {
-    pub fn evaluate(&self, payload: &Value, tool_name: &str) -> Evaluation<'_> {
+    pub fn evaluate(&self, payload: &Value, call: &ToolCall, context: &Context) -> Evaluation<'_> {
         Evaluation {
             matches: self
                 .rules
                 .iter()
-                .filter(|rule| rule.matches(payload, tool_name))
+                .filter(|rule| rule.matches(payload, call, context))
                 .collect(),
         }
     }
 }
 
 impl Rule {
-    fn matches(&self, payload: &Value, tool_name: &str) -> bool {
+    fn matches(&self, payload: &Value, call: &ToolCall, context: &Context) -> bool {
         self.tool
             .as_ref()
-            .is_none_or(|tool| tool.is_match(tool_name))
-            && self.fields.iter().all(|field| field.matches(payload))
+            .is_none_or(|tool| tool.is_match(&call.tool_name))
+            && self
+                .fields
+                .iter()
+                .all(|field| field.matches(payload, call, context))
     }
 
     pub fn reason(&self) -> String {
@@ -99,7 +108,7 @@ impl Rule {
 }
 
 impl FieldCondition {
-    fn matches(&self, payload: &Value) -> bool {
+    fn matches(&self, payload: &Value, call: &ToolCall, context: &Context) -> bool {
         let value = lookup(payload, &self.path);
         let text = value.and_then(as_text);
         self.matchers.iter().all(|matcher| match (matcher, &text) {
@@ -111,6 +120,13 @@ impl FieldCondition {
             }
             (FieldMatcher::Equals(expected), Some(text)) => text == expected,
             (FieldMatcher::Glob(glob), Some(text)) => glob.is_match(text.as_ref()),
+            (FieldMatcher::Under(dirs), Some(text)) => {
+                let target = paths::resolve(Path::new(text.as_ref()), &call.cwd);
+                dirs.iter().any(|dir| {
+                    let dir = paths::expand_dir(dir, &context.home, &call.cwd);
+                    target.starts_with(paths::resolve(&dir, &call.cwd))
+                })
+            }
         })
     }
 }
