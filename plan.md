@@ -86,10 +86,10 @@ Claude verification on this machine uses a **scratch project** with the hook reg
 
 ### Phase 0: Light review
 
-- [ ] **0.1 Dependency cleanup and update**
+- [x] **0.1 Dependency cleanup and update**
   - Remove `lazy_static`, `derive_builder`, `itertools`. Replace `nix` flock with std `File::lock` in `auditing.rs`.
   - Bump all remaining dependencies to their latest stable versions (`cargo outdated`, then edit `Cargo.toml`, then `cargo update`).
-  - **Verify:** the quality gate passes with the existing tests unchanged, `cargo outdated` shows nothing outstanding, and `cat tests/read_allowed.json | cargo run -- run --config example.toml` still prints an allow.
+  - **Verify:** the quality gate passes with the existing tests unchanged, `cargo outdated` shows nothing outstanding, and `cat tests/read_allowed.json | cargo run -- run --config tests/test_config.toml` still prints an allow (with audit pointed at a temp file and level `all`, to exercise the new lock).
 
 - [ ] **0.2 Review findings**
   - Write `docs/review-findings.md` covering design lessons to carry forward and smells to avoid. Already seen:

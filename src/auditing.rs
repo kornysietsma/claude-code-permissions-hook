@@ -5,7 +5,6 @@ use crate::config::AuditLevel;
 use crate::hook_io::HookInput;
 use chrono::{DateTime, Utc};
 use log::warn;
-use nix::fcntl::{Flock, FlockArg};
 use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -102,16 +101,14 @@ fn try_audit_tool_use(
 
     let json_line = serde_json::to_string(&entry)?;
 
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(audit_path)?;
 
-    let mut flock = Flock::lock(file, FlockArg::LockExclusive).map_err(|(_, e)| e)?;
-
-    writeln!(flock, "{}", json_line)?;
-
-    flock.unlock().map_err(|(_, e)| e)?;
+    file.lock()?;
+    writeln!(file, "{}", json_line)?;
+    file.unlock()?;
 
     Ok(())
 }
