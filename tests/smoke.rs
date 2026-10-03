@@ -5,6 +5,8 @@ use tempfile::TempDir;
 
 const BASH_PAYLOAD: &str = r#"{"session_id":"s","transcript_path":"t","cwd":"/tmp","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
 
+const COPILOT_BASH_PAYLOAD: &str = r#"{"sessionId":"s","timestamp":1760000000000,"cwd":"/tmp","toolName":"bash","toolArgs":{"command":"ls"}}"#;
+
 fn tool_gate_hook(home: &Path, args: &[&str], stdin: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_tool-gate-hook"))
         .args(args)
@@ -97,4 +99,32 @@ fn validate_fails_when_config_is_missing() {
         "{}",
         stderr(&output)
     );
+}
+
+#[test]
+fn copilot_run_asks_and_exits_zero_when_config_is_missing() {
+    let home = TempDir::new().unwrap();
+    let output = tool_gate_hook(
+        home.path(),
+        &["run", "--agent", "copilot"],
+        COPILOT_BASH_PAYLOAD,
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(stdout["permissionDecision"], "ask");
+    assert!(
+        stderr(&output).contains("copilot.toml"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn copilot_run_exits_zero_on_claude_payload() {
+    let home = TempDir::new().unwrap();
+    let output = tool_gate_hook(home.path(), &["run", "--agent", "copilot"], BASH_PAYLOAD);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
 }

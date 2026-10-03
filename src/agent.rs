@@ -33,13 +33,25 @@ impl Agent {
                 {
                     bail!("not a PreToolUse payload (hook_event_name = {event})");
                 }
-                Ok(ToolCall {
-                    tool_name: string_field(payload, "tool_name")?,
-                    cwd: PathBuf::from(string_field(payload, "cwd")?),
-                })
+                self.tool_call(payload, "tool_name")
             }
-            Agent::Copilot => bail!("Copilot support arrives in plan step 4.1"),
+            Agent::Copilot => self.tool_call(payload, "toolName"),
         }
+    }
+
+    fn tool_call(self, payload: &Value, tool_key: &str) -> Result<ToolCall> {
+        Ok(ToolCall {
+            tool_name: self.string_field(payload, tool_key)?,
+            cwd: PathBuf::from(self.string_field(payload, "cwd")?),
+        })
+    }
+
+    fn string_field(self, payload: &Value, key: &str) -> Result<String> {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("no string {key}; not a {} payload", self.name()))
     }
 
     pub fn render(self, decision: Decision, reason: &str) -> Value {
@@ -64,14 +76,6 @@ impl Agent {
 pub struct ToolCall {
     pub tool_name: String,
     pub cwd: PathBuf,
-}
-
-fn string_field(payload: &Value, key: &str) -> Result<String> {
-    payload
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow!("no string {key}; not a Claude Code payload"))
 }
 
 #[cfg(test)]

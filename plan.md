@@ -15,9 +15,9 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Current state (after step 3.2)
+## Current state (after step 4.1)
 
-The Claude side of the engine is complete: config loading, all six matchers, tiered decisions, error handling. Auditing is **off** until phase 5 (deliberately, rather than stubbed). Copilot payloads are rejected until 4.1.
+The Claude side of the engine is complete: config loading, all six matchers, tiered decisions, error handling. Auditing is **off** until phase 5 (deliberately, rather than stubbed). 
 
 ### Modules as built
 
@@ -70,7 +70,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
 
 ### Phase 4: Copilot
 
-- [ ] **4.1 Copilot adapter**
+- [x] **4.1 Copilot adapter**
   - Copilot parse: `toolName`, `cwd`. Copilot render: flat `{permissionDecision, permissionDecisionReason}`.
   - The reason is always present on deny, and default reasons are always produced.
   - Mismatch detection works both ways.
