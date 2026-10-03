@@ -1,172 +1,72 @@
 # tool-gate-hook: Implementation Plan
 
-Implements `spec.md`. Work happens on branch `rework-for-copilot`.
+Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; push and PR at phase 10).
 
 ## How to work through this plan
 
-- Steps are done in order. Each step is **test-first**: write that step's acceptance tests, watch them fail, implement, make them pass.
+- Do steps in order. Each step is **test-first**: write that step's acceptance tests, watch them fail, implement, make them pass. If tests pass at once, break the code on purpose to prove they can fail.
 - A step is done when its **Verify** list passes **and** the quality gate passes:
   ```bash
   cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
   ```
-- Each completed step gets one commit, after the user has seen it. Check the box in this file in the same commit.
-- If a step shows that the spec is wrong or unclear, stop and update `spec.md` (with the user) before continuing.
+- Stop at the end of each step for the user to review. On approval, tick the box here and make one commit for the step (attribution line per the session's instructions).
+- If a step shows that the spec is wrong or unclear, raise it with the user and update `spec.md` before continuing. Small decisions made along the way also go into `spec.md` once approved.
+- Record decisions and context in `spec.md`, `plan.md` or `AGENTS.md`, never in agent memory files.
+- **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
+- Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Technical context and design decisions
+## Current state (after step 3.2)
 
-### What survives from the current code
+The Claude side of the engine is complete: config loading, all six matchers, tiered decisions, error handling. Auditing is **off** until phase 5 (deliberately, rather than stubbed). Copilot payloads are rejected until 4.1.
 
-Little. The current engine is tied to per-tool `*_regex` fields and Claude-only payload structs. Things to keep or adapt:
-- the `flock` append in `auditing.rs` (moving from `nix` to std `File::lock`, stable since Rust 1.89)
-- the recursive `truncate_json_strings` (gains a length marker)
-- the clap subcommand skeleton and lint attributes
+### Modules as built
 
-Everything else is replaced. Old modules are deleted as soon as their replacement lands, so there is never a parallel old/new engine.
+| Module | Contents |
+|---|---|
+| `main.rs` | clap CLI (`run`/`validate`, `Target { agent, config }`). `run` builds `Context { home }` from `std::env::home_dir()`, reads stdin, calls `lib::run`, prints `warnings` to stderr and `output` to stdout, **always exits 0**. `validate` loads the config, exits 1 on error; its summary is still an `info!` log, so it prints nothing by default (fixed in 6.1). Imports anyhow's trait as `Context as _` to avoid clashing with `tool_gate_hook::Context`. |
+| `lib.rs` | `Context { home }` (clock to be added in 5.1); `Outcome { output: Option<Value>, warnings: Vec<String> }` (audit to be added in 5.1); `run(agent, config_path, stdin, &Context) -> Outcome`. Order: parse JSON and `agent.parse()` first (failure → passthrough + warning), then `Config::load` (failure → `ask` with `tool-gate-hook config error (<path>): <details>`), then evaluate and render. |
+| `agent.rs` | `Agent { Claude, Copilot }` (clap `ValueEnum`); `default_config_path(home)`; `parse(&Value) -> Result<ToolCall>` (Claude arm done; **Copilot arm currently `bail!`s**); `render(Decision, reason) -> Value` (both arms written; Copilot arm untested); `ToolCall { tool_name, cwd }`; `string_field` helper (its error text says "not a Claude Code payload" — generalise in 4.1). |
+| `config.rs` | `Config { audit: Option<AuditConfig>, policy }`, `Config::load(path)` / `from_toml(str)`. `AuditConfig { file, level, max_value_len }`, `AuditLevel { Off, Matched, All }`. Each `[[rule]]` is parsed from a `toml::Table` separately so errors read `rule #N (description): match."path": <matcher>: …`. `deny_unknown_fields` everywhere. `OneOrMany` for `regex`/`not_regex`; `@name` resolves `[patterns]`. Load errors don't include the path — callers add it. |
+| `policy.rs` | `Decision { Allow, Ask, Deny }` (`Ord`, serde lowercase, `as_str`); `Policy { rules }`; `Rule { index (1-based), decision, tool: Option<Regex> (anchored), description, reason, fields }` with `reason()` (custom or `tool-gate-hook: <decision> by rule #N (description)`); `FieldCondition { path, matchers }`; `FieldMatcher { Regex, NotRegex, Equals, Glob, Under(Vec<String>), Exists }`; `Policy::evaluate(&payload, &ToolCall, &Context) -> Evaluation { matches: Vec<&Rule> }` with `decided_by()`. Values match as text (strings; numbers/bools as JSON text); null/arrays/objects/missing fail every matcher except `exists`. |
+| `paths.rs` | `expand_dir(dir, home, cwd)` (`~`, `~/…`, `{cwd}`), `resolve(path, cwd)` (canonicalise longest existing prefix of the raw path, then clean up the remainder textually). Private module. |
+| `auditing.rs` | Only `truncate_json_strings` (pub, unit-tested) survives; the rest is rebuilt in phase 5 (rename the module to `audit.rs` then if it reads better). |
 
-### Module layout (target)
+### Tests and fixtures
 
-| Module | Responsibility | Side effects |
-|---|---|---|
-| `main.rs` | clap CLI; builds the real `Context`; reads stdin; calls `run`/`validate`; prints output; writes audit; prints warnings to stderr; **always exits 0 for `run`** | all I/O |
-| `lib.rs` | `run(agent, config_path, stdin, &Context) -> Outcome` and `validate(agent, config_path) -> Result<ValidationReport>`. Glues the modules together | reads the config file |
-| `agent.rs` | `enum Agent { Claude, Copilot }`: `parse(&Value) -> Result<ToolCall, Mismatch>` (extracts tool name and cwd), `render(Decision, &str) -> Value` (output JSON), `known_top_level_keys()` (used by `validate`) | none |
-| `config.rs` | serde structs for the TOML (`deny_unknown_fields`) and `compile() -> Result<Policy>`: resolves `@patterns` and compiles regexes and globs | none |
-| `policy.rs` | compiled `Rule` and `FieldMatcher`, field-path lookup, `evaluate(&Policy, &Value, &ToolCall, &Context) -> Evaluation` (all matches plus the final decision) | `under` canonicalisation reads the filesystem |
-| `paths.rs` | `under` support: expand `~` and `{cwd}`, lexical normalisation, canonicalising the longest existing ancestor, component-wise containment | reads the filesystem |
-| `audit.rs` | `AuditRecord` construction, level filtering, value truncation, `append(path, &AuditRecord)` under lock | the write function only |
+- `tests/config.rs`: config parsing and error messages via `Config::from_toml`.
+- `tests/claude.rs`: in-process acceptance tests. Helpers: `fixture(name)`, `with_field(name, &[path], json)`, `run_claude(config, stdin) -> Option<Value>`, `run_claude_outcome(...) -> Outcome`, `no_home()`, `decision(&output)`, `reason(&output)`, and `path_fixture()` / `run_under(...)` (temp tree with a symlink escaping the project). For Copilot, consider moving shared helpers into `tests/common/mod.rs` rather than copying them.
+- `tests/smoke.rs`: spawns the binary with `HOME` set to a temp dir; covers missing `--agent`, default config path, exit 0 with `ask` on missing config, exit 0 on garbage stdin, `validate` failure.
+- `tests/fixtures/claude/{bash,read,write,edit,agent}.json`: current documented Claude payload shape (includes `permission_mode`, `effort`, `tool_use_id`, `prompt_id`).
 
-`Context` carries the injected dependencies: `clock: &dyn Clock` (`fn now(&self) -> DateTime<FixedOffset>`) and `home: PathBuf`. Production uses the local system clock and `std::env::home_dir()`. Tests use a fixed clock and a temp-dir home. `duration_us` is the difference between two clock reads, so with a fixed clock it is `0` in tests.
+### Interim files (replaced later)
 
-`Outcome` holds:
-- `output: Option<serde_json::Value>`, the stdout JSON (None means passthrough)
-- `audit: Option<(PathBuf, AuditRecord)>`, the record to write and where to write it (None when the level filters it out or the config failed to load)
-- `warnings: Vec<String>`, which go to stderr
-
-`run` returns this instead of performing I/O, so acceptance tests can assert on everything.
-
-### Core types
-
-```rust
-enum Decision { Allow, Ask, Deny }            // Ord: Allow < Ask < Deny; final decision = max over matches
-struct ToolCall { tool_name: String, cwd: PathBuf }
-struct RuleMatch { index: usize, decision: Decision, description: Option<String> }
-struct Evaluation { matches: Vec<RuleMatch>, decided_by: Option<RuleMatch> }   // None = passthrough
-enum FieldMatcher { Regex(Vec<Regex>), NotRegex(Vec<Regex>), Equals(String), Glob(GlobMatcher), Under(Vec<String>), Exists(bool) }
-```
-
-The tiered decision falls out of `Ord`. `decided_by` is the first match, in file order, whose decision equals the maximum.
+- `example.toml`: small config in the new format (step 7.1 replaces it with `examples/`). `sample-mermaid-hook.toml` is the old-format reference for the mermaid example.
+- `README.md`, `docs/configuration-guide.md`, `docs/tool-input-schemas.md`, `tests/README.md` still describe the old design (rewritten in 7.2). `AGENTS.md` has an interim code-structure section pointing at `spec.md`.
+- `docs/review-findings.md`: pre-rework findings; bug numbers there are referenced from steps below.
 
 ### Dependencies
 
-| Keep / add | Purpose |
-|---|---|
-| `anyhow`, `clap` (derive), `serde`, `serde_json`, `toml`, `regex`, `chrono`, `log`, `env_logger` | as now, bumped to latest stable |
-| `globset` (new) | `glob` matcher. Part of ripgrep, widely used and well maintained |
-| `tempfile` (new, dev) | temp audit files, symlink trees for `under`, temp home |
-| `pretty_assertions` (dev) | as now |
-
-Remove: `lazy_static`, `derive_builder`, `itertools` (all unused) and `nix` (replaced by std `File::lock`).
-
-### Testing approach
-
-- **In-process acceptance tests** (`tests/acceptance_*.rs`) call `tool_gate_hook::run` with a fixture payload, a config, a fixed clock and a temp home, and assert on the whole `Outcome` (output JSON plus audit record) with `pretty_assertions`.
-- **Configs** are written inline in the tests as TOML strings and saved to a temp dir. A config next to its assertions reads better than a separate file. The shared example configs under `examples/` also get tests that load them.
-- **Payload fixtures** live in `tests/fixtures/{claude,copilot}/*.json`. They are files so that captured real payloads can be dropped in later.
-- **Binary smoke tests** (`tests/smoke.rs`) spawn `env!("CARGO_BIN_EXE_tool-gate-hook")` for CLI wiring, the always-exit-0 rule, `validate` exit codes and a real audit file append. There are only a handful of them.
-- **Unit tests** cover only fiddly pure functions: path normalisation and containment, field-path lookup, pattern resolution and truncation.
-- **Coverage goal: enough to be confident it works, not exhaustive.** This is a personal project. Test the main behaviours and the security-relevant edge cases (precedence, exclusions, `under` traversal and symlinks). Skip unlikely runtime edge cases, especially when a test would add complexity such as concurrency, process orchestration or elaborate setup. The Verify lists below are guides; one representative case per behaviour is enough.
+`anyhow`, `clap`, `serde`, `serde_json`, `toml` 1.x, `regex`, `globset`, `chrono` (unused until 5.1), `log`, `env_logger`; dev: `pretty_assertions`, `tempfile`. Lints live in `[lints]` in `Cargo.toml`; never add `#![…]` lint attributes to source files.
 
 ### Verifying with a real agent without disrupting daily use
 
-Claude verification on this machine uses a **scratch project** with the hook registered in that project's `.claude/settings.local.json`, not the user-level settings. A broken build therefore only affects that project. Moving the hook to user level is a separate, final, manual step.
+Claude verification (phase 8) uses a **scratch project** with the hook registered in that project's `.claude/settings.local.json`, not user-level settings, so a broken build only affects that project.
 
 ---
 
 ## Checklist
 
-### Phase 0: Light review
+### Done
 
-- [x] **0.1 Dependency cleanup and update**
-  - Remove `lazy_static`, `derive_builder`, `itertools`. Replace `nix` flock with std `File::lock` in `auditing.rs`.
-  - Bump all remaining dependencies to their latest stable versions (`cargo outdated`, then edit `Cargo.toml`, then `cargo update`).
-  - **Verify:** the quality gate passes with the existing tests unchanged, `cargo outdated` shows nothing outstanding, and `cat tests/read_allowed.json | cargo run -- run --config tests/test_config.toml` still prints an allow (with audit pointed at a temp file and level `all`, to exercise the new lock).
-
-- [x] **0.2 Review findings**
-  - Write `docs/review-findings.md` covering design lessons to carry forward and smells to avoid. Already seen:
-    - `load_config` returns rules that `run_hook` discards
-    - `process_hook_input_with_config` recompiles the rules
-    - the `HookResult`/`Decision` split
-    - Claude-only fields are hardcoded in `HookInput`
-    - each tool's rule fields are duplicated
-    - comments restate the code
-    - the old tests go through the library API rather than the binary
-  - Fix nothing that phases 1 to 5 will rewrite anyway.
-  - **Verify:** the user reads and agrees with the findings.
-
-### Phase 1: Rename and CLI
-
-- [x] **1.1 Rename to `tool-gate-hook`**
-  - Move the lint attributes into a `[lints.rust]` / `[lints.clippy]` section in `Cargo.toml` (`unsafe_code = "forbid"`, `rust_2018_idioms`, `rust_2024_compatibility`, `deprecated_safe`, `clippy::all`), and delete the `#![…]` attributes from every source file.
-  - Change the package and binary name to `tool-gate-hook` and the library crate to `tool_gate_hook`. Update the `use` paths, the clap `about` text and `AGENTS.md` (name and commands only; the full rewrite is in 7.2).
-  - **Verify:** the quality gate passes, and `cargo run -- validate --config example.toml` works under the new name.
-
-- [x] **1.2 New CLI shape**
-  - Make `--agent claude|copilot` required on `run` and `validate`, and `--config` optional.
-  - The default config is `home/.config/tool-gate-hook/<agent>.toml`.
-  - `run` always exits 0. Any error goes to stderr, and the call passes through until 2.3 adds the "ask" behaviour.
-  - Start `tests/smoke.rs`.
-  - **Verify:** smoke tests confirm that a missing `--agent` is a clap error, the default path resolves under the test `HOME`, and `run` with a nonexistent config exits 0.
-
-### Phase 2: New engine (Claude only)
-
-- [x] **2.1 Config model and compilation**
-  - New `config.rs` covering `[audit]` (`file`, `level`, `max_value_len` defaulting to 1024), `[patterns]`, and `[[rule]]` (`decision`, `tool`, `description`, `reason`, `match`).
-  - In this step `match` supports only `regex` and `not_regex`, each taking a string or a list, with `@name` references.
-  - Use `deny_unknown_fields` throughout, so a typo in a matcher key is an error.
-  - Compile to a `Policy`. Anchor `tool` as `^(?:…)$`.
-  - Errors name the rule index and field path.
-  - Delete the old `[[allow]]`/`[[deny]]` structures.
-  - **Verify:** tests cover a valid config and a few representative errors (an unknown `@pattern`, a bad regex, a misspelt matcher key), with the error message naming the offending rule.
-
-- [x] **2.2 Evaluation and Claude adapter (the `run` pipeline)**
-  - `policy.rs` covers field-path lookup (missing path means no match; numbers and booleans match as JSON text; objects and arrays never match `regex`), the AND of all entries in `match`, evaluation of every rule, and the tiered decision.
-  - `agent.rs` contains the Claude parse and render functions, with default reasons.
-  - `lib::run` wired into `main`. (As built: `Context`/`Clock`/`Outcome` are deferred to the steps that first need them — 2.3, 3.2, 5.1 — and auditing is off until 5.1 rather than stubbed.)
-  - Delete the old `matcher.rs`, `hook_io.rs`, `tests/integration_test.rs` and `tests/*.json`, and add `tests/fixtures/claude/` (Bash, Read, Write, Edit, Agent payloads in the current documented shape).
-  - **Verify:**
-    - deny beats allow regardless of file order, and ask beats allow
-    - `decided_by` is the first rule with the winning tier, and every match is recorded in file order
-    - a `not_regex` hit gives passthrough, not deny
-    - `@pattern` lists work; a missing field means no match
-    - `tool` is anchored (`Read` doesn't match `ReadMcpResource`)
-    - matching on a top-level field (`permission_mode`) works
-    - the output JSON is exactly the spec shape for allow, deny and ask
-    - a custom `reason` is used, and the default reason format is correct
-    - manual check: `cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config <tmp config>`
-
-- [x] **2.3 Error handling**
-  - A config error (missing file, bad TOML, bad regex, unknown pattern) produces an `ask` with the reason `tool-gate-hook config error (<path>): <details>` and a stderr warning.
-  - Malformed JSON, or a payload that doesn't match the agent, produces passthrough and a warning; its audit record arrives in 5.2.
-  - `main` never exits non-zero for `run`.
-  - **Verify:** acceptance tests cover each config error giving `ask` in Claude format, garbage stdin giving passthrough, and a Copilot-shaped payload under `--agent claude` giving passthrough. Smoke tests show exit code 0 in each case.
-
-### Phase 3: Remaining matchers
-
-- [x] **3.1 `equals`, `exists`, `glob`**
-  - Add `globset` and compile globs when the config loads; a bad glob is a config error.
-  - **Verify:** acceptance tests show each matcher passing and failing, `exists = false` on a missing field matching, several matchers on one field being ANDed, and a bad glob producing a config error that becomes `ask`.
-
-- [x] **3.2 `under`**
-  - `paths.rs` provides `~` expansion from `Context.home`, `{cwd}` from `ToolCall.cwd`, resolution of relative values against cwd, lexical normalisation, canonicalisation of the longest existing ancestor, and component containment. Listed directories are canonicalised the same way.
-  - **Verify:**
-    - unit tests in `paths.rs`
-    - acceptance tests in a tempdir tree:
-      - `/x/allowed/../secret` is not under `/x/allowed`
-      - a symlink inside the allowed dir that points outside is not under it
-      - a not-yet-existing file in an allowed dir is under it
-      - `/tmp/mermaid2` is not under `/tmp/mermaid`
-      - `{cwd}` and `~` expand
-      - a relative `file_path` resolves against payload cwd
+- [x] **0.1** Removed unused deps and `nix` (std `File::lock`), bumped everything to latest.
+- [x] **0.2** `docs/review-findings.md`.
+- [x] **1.1** Renamed to `tool-gate-hook`; lints moved to `Cargo.toml`.
+- [x] **1.2** Required `--agent`, default config `~/.config/tool-gate-hook/<agent>.toml`, `run` always exits 0 (clap argument errors still exit 2, deliberately).
+- [x] **2.1** New config model compiled to a `Policy`.
+- [x] **2.2** Evaluation and Claude adapter.
+- [x] **2.3** Error handling (`Outcome`, config error → `ask`, bad payload → passthrough).
+- [x] **3.1** `equals`, `exists`, `glob`.
+- [x] **3.2** `under`, with symlink-safe resolution (the spec's original lexical-first algorithm was unsafe and has been corrected).
 
 ### Phase 4: Copilot
 
@@ -175,6 +75,8 @@ Claude verification on this machine uses a **scratch project** with the hook reg
   - The reason is always present on deny, and default reasons are always produced.
   - Mismatch detection works both ways.
   - Add `tests/fixtures/copilot/` covering `bash`, `view`, `create`, `edit`, `glob`, `task`. Use the documented shape, with best-guess `toolArgs` field names marked as unverified in a fixture README note.
+  - Starting point: replace the `bail!` in `Agent::parse`'s Copilot arm (`toolName`, `cwd` via `string_field`); make `string_field`'s error name the agent. `render`'s Copilot arm already exists. `smoke.rs`'s `BASH_PAYLOAD` is Claude-shaped, so add a Copilot one for the Copilot smoke test.
+  - Documented Copilot input (native camelCase `preToolUse`): `{ sessionId, timestamp (Unix ms), cwd, toolName, toolArgs (parsed object) }`; tool names `bash`, `view`, `create`, `edit`, `glob`, `grep`, `rg`, `task`, `web_fetch`, … Output: `{ permissionDecision: allow|deny|ask, permissionDecisionReason }`. Source: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference
   - **Verify:** acceptance tests show:
     - allow, deny and ask output for Copilot
     - config error giving Copilot-format `ask`
@@ -188,12 +90,15 @@ Claude verification on this machine uses a **scratch project** with the hook reg
 - [ ] **5.1 New audit record**
   - The spec's JSONL record: `ts` from the clock, `agent`, `config` (canonical path), `decision` including `passthrough`, `decided_by`, `matches`, `payload`, `duration_us`.
   - Levels `off`, `matched` and `all`.
-  - Replace the old `AuditEntry`.
+  - Add `clock` to `Context` (a `Clock` trait with `now() -> DateTime<FixedOffset>`; production uses local time, tests a fixed time) and `audit: Option<(PathBuf, AuditRecord)>` to `Outcome`; `main` writes it. `duration_us` = difference of two clock reads (0 in tests).
+  - `matches` / `decided_by` entries are `{ index, decision, description }` built from `Evaluation`'s `&Rule`s.
   - **Verify:** acceptance tests compare whole records with a fixed clock for allow, deny, ask, passthrough and multi-match cases, plus level filtering (passthrough is not recorded at `matched` but is at `all`, and `off` records nothing).
 
 - [ ] **5.2 Truncation and error records**
   - Truncated values get the marker `…[truncated, N chars]`, and `max_value_len = 0` disables truncation.
   - Error records hold the raw stdin as a truncated string plus `error`, and they are written at both `matched` and `all`.
+  - `run` checks the payload before loading the config, so for a mismatched or malformed payload it must still load the config quietly to find the audit settings (spec, Error handling). If that load fails, there is no record and no `ask`, just the stderr warning.
+  - Start from the existing `auditing::truncate_json_strings` (currently appends a bare `…`, no length).
   - **Verify:** unit tests for truncation (nested, arrays, non-strings unchanged, char counting rather than bytes, the marker contents). Acceptance tests show a long `Write` content being truncated while all keys are kept, `0` keeping the full content, and malformed and mismatched payloads producing error records.
 
 - [ ] **5.3 Audit writing**
@@ -204,7 +109,8 @@ Claude verification on this machine uses a **scratch project** with the hook reg
 ### Phase 6: `validate`
 
 - [ ] **6.1 Validate command**
-  - Print a summary: rule counts per decision, the pattern names, and the audit file, level and `max_value_len`.
+  - Print a summary to **stdout** (today it's an `info!` log that is invisible by default — review-findings bug #7): rule counts per decision, the pattern names, and the audit file, level and `max_value_len`.
+  - Add the known top-level keys per agent to `agent.rs` (Claude: `session_id`, `prompt_id`, `transcript_path`, `cwd`, `scratchpad_dir`, `permission_mode`, `effort`, `hook_event_name`, `agent_id`, `agent_type`, `tool_name`, `tool_input`, `tool_use_id`; Copilot: `sessionId`, `timestamp`, `cwd`, `toolName`, `toolArgs`). Warnings are not errors (exit 0).
   - Exit non-zero on any config error.
   - **Warn** when a field path's first segment isn't one of the agent's known top-level keys.
   - **Verify:** smoke tests cover a valid config (exit 0 and the summary text), a broken config (non-zero exit and the error text), and a Claude config validated with `--agent copilot` (exit 0 with warnings naming each offending rule).
@@ -221,7 +127,8 @@ Claude verification on this machine uses a **scratch project** with the hook reg
   - Rewrite `README.md` and `docs/configuration-guide.md`.
   - Split `docs/tool-input-schemas.md` into `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md`, with the Copilot one marked unverified until phase 9.
   - Rewrite `tests/README.md`, including the `jq` capture one-liner.
-  - Rewrite `AGENTS.md` in full, keeping the testing-coverage guidance and the "Project knowledge" section.
+  - Rewrite `AGENTS.md` in full, keeping the testing-coverage guidance, the "Project knowledge" section and the `[lints]` note. Its "Logging" section (TOML `log_level`, trace/debug/info rule logging) describes things that don't exist; replace it with the real `RUST_LOG` stderr diagnostics and the audit log.
+  - Document the `@` escaping rule (`\@` or `[@]`), `glob` being path-style, and `exists = false`.
   - Delete `update-thoughts.md`.
   - **Verify:**
     - `grep -rn "allow\]\]\|deny\]\]\|_regex =\|claude-code-permissions-hook" --include=*.md .` returns no hits (outside `spec.md`/`plan.md`)

@@ -59,7 +59,7 @@ Each agent has a small adapter. Adapters only extract the few fields the engine 
 Input (stdin, snake_case). Relevant fields, current docs:
 `session_id`, `prompt_id`, `transcript_path`, `cwd`, `permission_mode`, `effort.level`, `hook_event_name` (= `"PreToolUse"`), `agent_id`, `agent_type`, `tool_name`, `tool_input` (per-tool object, e.g. `command`, `file_path`), `tool_use_id`.
 
-Adapter extracts: tool name = `tool_name`, cwd = `cwd`. Payload is a mismatch if `tool_name` is missing or `hook_event_name` is present and not `PreToolUse`.
+Adapter extracts: tool name = `tool_name`, cwd = `cwd`. Payload is a mismatch if `tool_name` or `cwd` is missing or not a string, or `hook_event_name` is present and not `PreToolUse`.
 
 Output on a decision:
 
@@ -82,7 +82,7 @@ Note: Claude's `Task` tool now appears to be `Agent`; verify during phase 7 and 
 
 Input: `sessionId`, `timestamp` (Unix ms), `cwd`, `toolName` (`bash`, `view`, `create`, `edit`, `glob`, `grep`, `rg`, `task`, `web_fetch`, …), `toolArgs` (parsed object).
 
-Adapter extracts: tool name = `toolName`, cwd = `cwd`. Payload is a mismatch if `toolName` is missing (e.g. Copilot sending the Claude-compatible snake_case payload because it picked up a `.claude/settings.json` hook).
+Adapter extracts: tool name = `toolName`, cwd = `cwd`. Payload is a mismatch if `toolName` or `cwd` is missing or not a string (e.g. Copilot sending the Claude-compatible snake_case payload because it picked up a `.claude/settings.json` hook).
 
 Output on a decision:
 
@@ -248,7 +248,7 @@ Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
 | Situation | Behaviour |
 |---|---|
 | Config error (missing explicit or default file, bad TOML, invalid regex/glob, unknown `@pattern`, unknown matcher key) | Output **`ask`** with reason `tool-gate-hook config error (<path>): <details>`, plus stderr. Loud but never locks you out — chosen because a config may break long after you've forgotten the hook exists. |
-| Malformed stdin JSON / payload doesn't match `--agent` | Passthrough (no output), audit an error record, stderr warning. The payload is checked **before** the config is loaded, so a payload meant for another agent passes through quietly even when the config is broken — this hook isn't the one that should answer it. |
+| Malformed stdin JSON / payload doesn't match `--agent` | Passthrough (no output), stderr warning, and an audit error record if the config loads (it is still loaded, quietly, just to find the audit settings — a config error here is not reported as `ask`). The payload is checked **before** the config is loaded, so a payload meant for another agent passes through quietly even when the config is broken — this hook isn't the one that should answer it. |
 | Audit write failure | stderr only; decision unaffected. |
 | Invalid command-line arguments (e.g. missing or unknown `--agent`) | clap error on stderr, **exit 2** — deliberately blocking (Claude treats exit 2 as block, Copilot as deny). This only happens right after editing a hook registration, so it surfaces immediately; without a valid `--agent` no well-formed `ask` can be produced anyway. |
 
@@ -256,12 +256,14 @@ Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
 
 Test-first, per step: each step writes its acceptance tests before implementing (see `plan.md`).
 
-- **Acceptance tests** (primary) run the binary end to end: fixture payload on stdin + fixture config → assert stdout JSON, exit code, and audit record (`pretty_assertions`).
+- **Acceptance tests** (primary) run in-process: they call `tool_gate_hook::run` with a fixture payload, a config written to a temp dir and an injected `Context` (temp home; fixed clock once auditing lands), and assert on the whole `Outcome` (stdout JSON, warnings, audit record) with `pretty_assertions`.
+- **Smoke tests** (a handful) spawn the real binary for CLI wiring, exit codes, `validate` and the real audit file write.
+- **Coverage goal**: enough to be confident it works, not exhaustive — main behaviours plus security-relevant edge cases.
 - Fixtures: `tests/fixtures/claude/…`, `tests/fixtures/copilot/…`. Initial fixtures come from documented payload examples; later, real captured payloads (via `level = "all"`, `max_value_len = 0`) are copied in. Document a `jq` one-liner for extracting a payload from an audit record into a fixture.
 - The mermaid example config (see Documentation) doubles as a realistic acceptance scenario: a narrow workflow of allowed commands and paths, with shell-chain and `..` safety nets. It is illustrative only, so its rules don't need to match the user's current mermaid workflow.
 - Must-cover cases: each decision tier and precedence (deny beats allow regardless of order), all matches recorded in order, `not_regex` exclusion → passthrough, `@pattern` lists, each matcher, `under` with `..`, symlinks, non-existent files, `{cwd}` and `~`; missing field; config error → ask (both agents' output formats); payload mismatch → passthrough + error record; truncation and `max_value_len = 0`; `validate` warnings.
 - **Unit tests** only for small, fiddly pure functions: path normalisation/containment, field-path lookup, pattern resolution, value truncation.
-- `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` must pass.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` must pass.
 
 ## Copilot verification (work machine)
 
