@@ -15,7 +15,7 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell note: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex).
 
-## Current state (after step 5.1)
+## Current state (after step 5.2)
 
 The Claude side of the engine is complete: config loading, all six matchers, tiered decisions, error handling. Auditing is **off** until phase 5 (deliberately, rather than stubbed). 
 
@@ -94,7 +94,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
   - `matches` / `decided_by` entries are `{ index, decision, description }` built from `Evaluation`'s `&Rule`s.
   - **Verify:** acceptance tests compare whole records with a fixed clock for allow, deny, ask, passthrough and multi-match cases, plus level filtering (passthrough is not recorded at `matched` but is at `all`, and `off` records nothing).
 
-- [ ] **5.2 Truncation and error records**
+- [x] **5.2 Truncation and error records**
   - Truncated values get the marker `…[truncated, N chars]`, and `max_value_len = 0` disables truncation.
   - Error records hold the raw stdin as a truncated string plus `error`, and they are written at both `matched` and `all`.
   - `run` checks the payload before loading the config, so for a mismatched or malformed payload it must still load the config quietly to find the audit settings (spec, Error handling). If that load fails, there is no record and no `ask`, just the stderr warning.

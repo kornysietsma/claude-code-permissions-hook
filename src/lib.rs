@@ -12,7 +12,7 @@ pub use config::Config;
 
 use agent::ToolCall;
 use anyhow::{Context as _, Result};
-use auditing::Evaluated;
+use auditing::Invocation;
 use chrono::{DateTime, FixedOffset, Local};
 use policy::Decision;
 use serde_json::Value;
@@ -47,12 +47,30 @@ pub struct Outcome {
 /// Evaluates one hook payload. Never fails: errors become warnings plus a passthrough or an `ask`
 pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> Outcome {
     let started = (context.clock)();
+    let invocation = || Invocation {
+        agent,
+        config_path,
+        started,
+        finished: (context.clock)(),
+    };
+
     let (payload, call) = match parse_payload(agent, stdin) {
         Ok(parsed) => parsed,
         Err(e) => {
-            return Outcome::passthrough_with_warning(format!(
-                "tool-gate-hook: ignoring payload: {e:#}"
-            ));
+            // The config is loaded quietly, only to find where to record the problem
+            let audit = Config::load(config_path)
+                .ok()
+                .and_then(|config| config.audit)
+                .and_then(|audit| {
+                    AuditRecord::for_error(&audit, &invocation(), stdin, format!("{e:#}"))
+                        .map(|record| (audit.file, record))
+                });
+            return Outcome {
+                audit,
+                ..Outcome::passthrough_with_warning(format!(
+                    "tool-gate-hook: ignoring payload: {e:#}"
+                ))
+            };
         }
     };
 
@@ -60,15 +78,8 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
         Ok(config) => {
             let evaluation = config.policy.evaluate(&payload, &call, context);
             let audit = config.audit.and_then(|audit| {
-                let evaluated = Evaluated {
-                    agent,
-                    config_path,
-                    payload: &payload,
-                    evaluation: &evaluation,
-                    started,
-                    finished: (context.clock)(),
-                };
-                AuditRecord::for_evaluation(&audit, &evaluated).map(|record| (audit.file, record))
+                AuditRecord::for_evaluation(&audit, &invocation(), &payload, &evaluation)
+                    .map(|record| (audit.file, record))
             });
             Outcome {
                 output: evaluation

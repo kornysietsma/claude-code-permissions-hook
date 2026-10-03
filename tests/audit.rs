@@ -23,13 +23,17 @@ struct Run {
 }
 
 fn run_claude(audit_level: &str, rules: &str, stdin: &str) -> Run {
+    run_claude_with(&format!("level = \"{audit_level}\""), rules, stdin)
+}
+
+fn run_claude_with(audit_settings: &str, rules: &str, stdin: &str) -> Run {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("claude.toml");
     let audit_file = dir.path().join("audit.jsonl");
     fs::write(
         &config_path,
         format!(
-            "[audit]\nfile = '{}'\nlevel = \"{audit_level}\"\n{rules}",
+            "[audit]\nfile = '{}'\n{audit_settings}\n{rules}",
             audit_file.display()
         ),
     )
@@ -193,4 +197,124 @@ fn no_audit_section_records_nothing() {
 
     assert!(outcome.output.is_some());
     assert_eq!(outcome.audit, None);
+}
+
+fn write_with_content(content: &str) -> String {
+    let mut payload: Value = serde_json::from_str(&fixture("write")).unwrap();
+    payload["tool_input"]["content"] = json!(content);
+    payload.to_string()
+}
+
+const ALLOW_WRITE: &str = "[[rule]]\ndecision = \"allow\"\ntool = \"Write\"";
+
+#[test]
+fn long_strings_are_truncated_but_every_key_is_kept() {
+    let stdin = write_with_content(&"x".repeat(200));
+    let record = run_claude_with("level = \"all\"\nmax_value_len = 100", ALLOW_WRITE, &stdin)
+        .record()
+        .unwrap();
+
+    let mut expected: Value = serde_json::from_str(&stdin).unwrap();
+    expected["tool_input"]["content"] =
+        json!(format!("{}…[truncated, 200 chars]", "x".repeat(100)));
+    assert_eq!(record["payload"], expected);
+}
+
+#[test]
+fn max_value_len_zero_keeps_the_full_content() {
+    let stdin = write_with_content(&"x".repeat(5000));
+    let record = run_claude_with("level = \"all\"\nmax_value_len = 0", ALLOW_WRITE, &stdin)
+        .record()
+        .unwrap();
+
+    assert_eq!(
+        record["payload"],
+        serde_json::from_str::<Value>(&stdin).unwrap()
+    );
+}
+
+#[test]
+fn default_max_value_len_is_1024() {
+    let stdin = write_with_content(&"x".repeat(2000));
+    let record = run_claude("all", ALLOW_WRITE, &stdin).record().unwrap();
+
+    let content = record["payload"]["tool_input"]["content"].as_str().unwrap();
+    assert!(content.ends_with("…[truncated, 2000 chars]"), "{content}");
+}
+
+#[test]
+fn malformed_stdin_gives_an_error_record_with_the_raw_text() {
+    let run = run_claude("matched", ALLOW_BASH, "garbage");
+
+    assert_eq!(run.outcome.output, None);
+    let mut record = run.record().unwrap();
+    let error = record.as_object_mut().unwrap().remove("error").unwrap();
+    assert!(
+        error
+            .as_str()
+            .unwrap()
+            .starts_with("stdin is not valid JSON"),
+        "{error}"
+    );
+    assert_eq!(
+        record,
+        json!({
+            "ts": "2026-10-03T17:42:01.123+10:00",
+            "agent": "claude",
+            "config": run.config(),
+            "decision": "passthrough",
+            "matches": [],
+            "payload": "garbage",
+            "duration_us": 0
+        })
+    );
+}
+
+#[test]
+fn payload_for_another_agent_gives_an_error_record_with_the_raw_text() {
+    let copilot = r#"{"sessionId":"s","cwd":"/tmp","toolName":"bash","toolArgs":{}}"#;
+    let record = run_claude("matched", ALLOW_BASH, copilot).record().unwrap();
+
+    assert_eq!(record["decision"], "passthrough");
+    assert_eq!(record["payload"], copilot);
+    assert!(
+        record["error"].as_str().unwrap().contains("tool_name"),
+        "{record}"
+    );
+}
+
+#[test]
+fn error_record_stdin_is_truncated() {
+    let stdin = "y".repeat(100);
+    let record = run_claude_with("level = \"all\"\nmax_value_len = 10", ALLOW_BASH, &stdin)
+        .record()
+        .unwrap();
+
+    assert_eq!(
+        record["payload"],
+        format!("{}…[truncated, 100 chars]", "y".repeat(10))
+    );
+}
+
+#[test]
+fn error_records_are_not_written_when_audit_is_off() {
+    assert_eq!(run_claude("off", ALLOW_BASH, "garbage").record(), None);
+}
+
+#[test]
+fn bad_payload_with_a_broken_config_warns_without_asking_or_recording() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("claude.toml");
+    fs::write(&config_path, "not toml [").unwrap();
+
+    let outcome = run(
+        Agent::Claude,
+        &config_path,
+        "garbage",
+        &Context::new(PathBuf::from("/nonexistent-home")),
+    );
+
+    assert_eq!(outcome.output, None);
+    assert_eq!(outcome.audit, None);
+    assert_eq!(outcome.warnings.len(), 1);
 }

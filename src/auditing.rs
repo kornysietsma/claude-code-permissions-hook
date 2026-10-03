@@ -17,7 +17,10 @@ pub struct AuditRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     decided_by: Option<DecidedBy>,
     matches: Vec<MatchedRule>,
+    /// The raw stdin text instead of JSON when it couldn't be used as a payload
     payload: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
     duration_us: i64,
 }
 
@@ -56,45 +59,36 @@ impl From<&Rule> for MatchedRule {
 }
 
 impl AuditConfig {
-    fn records(&self, any_rule_matched: bool) -> bool {
+    /// `notable` is true when a rule matched or something went wrong
+    fn records(&self, notable: bool) -> bool {
         match self.level {
             AuditLevel::Off => false,
-            AuditLevel::Matched => any_rule_matched,
+            AuditLevel::Matched => notable,
             AuditLevel::All => true,
         }
     }
 }
 
-/// What an evaluated call looked like, for the audit log
-pub struct Evaluated<'a> {
+/// What the hook was asked to do, common to every kind of record
+pub struct Invocation<'a> {
     pub agent: Agent,
     pub config_path: &'a Path,
-    pub payload: &'a Value,
-    pub evaluation: &'a Evaluation<'a>,
     pub started: DateTime<FixedOffset>,
     pub finished: DateTime<FixedOffset>,
 }
 
 impl AuditRecord {
     /// The record to write, or `None` when the configured level skips this call
-    pub fn for_evaluation(config: &AuditConfig, evaluated: &Evaluated<'_>) -> Option<Self> {
-        let Evaluated {
-            agent,
-            config_path,
-            payload,
-            evaluation,
-            started,
-            finished,
-        } = evaluated;
+    pub fn for_evaluation(
+        config: &AuditConfig,
+        invocation: &Invocation<'_>,
+        payload: &Value,
+        evaluation: &Evaluation<'_>,
+    ) -> Option<Self> {
         let decided_by = evaluation.decided_by();
         config
             .records(!evaluation.matches.is_empty())
             .then(|| AuditRecord {
-                ts: started.to_rfc3339_opts(SecondsFormat::Millis, false),
-                agent: agent.name(),
-                config: config_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| config_path.to_path_buf()),
                 decision: decided_by.map_or("passthrough", |rule| rule.decision.as_str()),
                 decided_by: decided_by.map(DecidedBy::from),
                 matches: evaluation
@@ -102,36 +96,75 @@ impl AuditRecord {
                     .iter()
                     .map(|rule| MatchedRule::from(*rule))
                     .collect(),
-                payload: (*payload).clone(),
-                duration_us: (*finished - *started)
-                    .num_microseconds()
-                    .unwrap_or(i64::MAX),
+                payload: truncate_json_strings(payload, config.max_value_len),
+                ..AuditRecord::base(invocation)
             })
+    }
+
+    /// The record for a stdin that wasn't a usable payload; written at every level but `off`
+    pub fn for_error(
+        config: &AuditConfig,
+        invocation: &Invocation<'_>,
+        stdin: &str,
+        error: String,
+    ) -> Option<Self> {
+        config.records(true).then(|| AuditRecord {
+            payload: truncate_json_strings(&Value::String(stdin.to_owned()), config.max_value_len),
+            error: Some(error),
+            ..AuditRecord::base(invocation)
+        })
+    }
+
+    fn base(invocation: &Invocation<'_>) -> Self {
+        AuditRecord {
+            ts: invocation
+                .started
+                .to_rfc3339_opts(SecondsFormat::Millis, false),
+            agent: invocation.agent.name(),
+            config: invocation
+                .config_path
+                .canonicalize()
+                .unwrap_or_else(|_| invocation.config_path.to_path_buf()),
+            decision: "passthrough",
+            decided_by: None,
+            matches: vec![],
+            payload: Value::Null,
+            error: None,
+            duration_us: (invocation.finished - invocation.started)
+                .num_microseconds()
+                .unwrap_or(i64::MAX),
+        }
     }
 }
 
-/// Recursively truncate string fields in a JSON value that exceed `max_len` characters.
-pub fn truncate_json_strings(value: &serde_json::Value, max_len: usize) -> serde_json::Value {
+/// Cuts every string longer than `max_len` characters and notes the original length;
+/// `0` disables truncation
+pub fn truncate_json_strings(value: &Value, max_len: usize) -> Value {
+    if max_len == 0 {
+        return value.clone();
+    }
     match value {
-        serde_json::Value::String(s) => {
-            if s.chars().count() <= max_len {
+        Value::String(s) => {
+            let len = s.chars().count();
+            if len <= max_len {
                 value.clone()
             } else {
-                let truncated: String = s.chars().take(max_len).collect();
-                serde_json::Value::String(format!("{}…", truncated))
+                let kept: String = s.chars().take(max_len).collect();
+                Value::String(format!("{kept}…[truncated, {len} chars]"))
             }
         }
-        serde_json::Value::Array(arr) => serde_json::Value::Array(
-            arr.iter()
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
                 .map(|v| truncate_json_strings(v, max_len))
                 .collect(),
         ),
-        serde_json::Value::Object(obj) => serde_json::Value::Object(
-            obj.iter()
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
                 .map(|(k, v)| (k.clone(), truncate_json_strings(v, max_len)))
                 .collect(),
         ),
-        // Numbers, bools, null pass through unchanged
         _ => value.clone(),
     }
 }
@@ -143,73 +176,58 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_truncate_short_string_unchanged() {
-        let input = json!("short string");
-        let result = truncate_json_strings(&input, 100);
-        assert_eq!(result, input);
+    fn short_strings_are_unchanged() {
+        assert_eq!(truncate_json_strings(&json!("short"), 5), json!("short"));
     }
 
     #[test]
-    fn test_truncate_long_string() {
-        let long_string = "x".repeat(200);
-        let input = json!(long_string);
-        let result = truncate_json_strings(&input, 50);
-
-        let truncated = result.as_str().unwrap();
-        assert!(truncated.ends_with("…"));
-        assert!(truncated.starts_with("xxxxxxxxxx"));
+    fn long_strings_are_cut_and_marked_with_the_original_length() {
+        assert_eq!(
+            truncate_json_strings(&json!("x".repeat(200)), 50),
+            json!(format!("{}…[truncated, 200 chars]", "x".repeat(50)))
+        );
     }
 
     #[test]
-    fn test_truncate_preserves_object_structure() {
-        let long_content = "y".repeat(200);
+    fn length_counts_characters_not_bytes() {
+        let multibyte = "é".repeat(10);
+
+        assert_eq!(
+            truncate_json_strings(&json!(multibyte), 10),
+            json!(multibyte)
+        );
+        assert_eq!(
+            truncate_json_strings(&json!(multibyte), 4),
+            json!("éééé…[truncated, 10 chars]")
+        );
+    }
+
+    #[test]
+    fn nested_strings_are_cut_and_other_values_are_unchanged() {
         let input = json!({
-            "file_path": "/short/path.rs",
-            "content": long_content
-        });
-        let result = truncate_json_strings(&input, 50);
-
-        // Structure preserved
-        assert!(result.is_object());
-        let obj = result.as_object().unwrap();
-
-        // Short field unchanged
-        assert_eq!(obj.get("file_path").unwrap(), "/short/path.rs");
-
-        // Long field truncated
-        let content = obj.get("content").unwrap().as_str().unwrap();
-        assert!(content.ends_with("…"));
-    }
-
-    #[test]
-    fn test_truncate_nested_structures() {
-        let long_string = "z".repeat(100);
-        let input = json!({
-            "outer": {
-                "inner": long_string.clone()
-            },
-            "array": ["short", long_string]
-        });
-        let result = truncate_json_strings(&input, 20);
-
-        // Nested object string truncated
-        let inner = result["outer"]["inner"].as_str().unwrap();
-        assert!(inner.ends_with("…"));
-
-        // Array elements handled
-        assert_eq!(result["array"][0], "short");
-        let arr_long = result["array"][1].as_str().unwrap();
-        assert!(arr_long.ends_with("…"));
-    }
-
-    #[test]
-    fn test_truncate_non_strings_unchanged() {
-        let input = json!({
+            "outer": { "inner": "z".repeat(30) },
+            "array": ["short", "z".repeat(30)],
             "number": 42,
             "bool": true,
             "null": null
         });
-        let result = truncate_json_strings(&input, 10);
-        assert_eq!(result, input);
+
+        assert_eq!(
+            truncate_json_strings(&input, 20),
+            json!({
+                "outer": { "inner": format!("{}…[truncated, 30 chars]", "z".repeat(20)) },
+                "array": ["short", format!("{}…[truncated, 30 chars]", "z".repeat(20))],
+                "number": 42,
+                "bool": true,
+                "null": null
+            })
+        );
+    }
+
+    #[test]
+    fn zero_disables_truncation() {
+        let input = json!({ "content": "x".repeat(5000) });
+
+        assert_eq!(truncate_json_strings(&input, 0), input);
     }
 }
