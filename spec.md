@@ -26,7 +26,7 @@ Backwards compatibility is explicitly **not** required: new name, new config for
 |---|---|
 | 0. Light review | Update all dependencies to latest stable; fix anything clearly wrong; write findings (design lessons, smells, things to avoid) to `docs/review-findings.md` as input to the rework. Do **not** polish code that will be rewritten. Candidates already spotted: `lazy_static` → `std::sync::LazyLock`; check whether `derive_builder` and `itertools` still earn their place. |
 | 1. Rename + CLI | Crate, binary, docs, `AGENTS.md` → `tool-gate-hook`; new CLI shape. |
-| 2. Acceptance tests first | Write acceptance tests and fixtures from this spec (see Testing) before implementing phases 3–5. |
+| 2. Test-first throughout | Each implementation step starts by writing its own acceptance tests (see Testing), then implements until green. Detailed steps are in `plan.md`. |
 | 3. Config + matching | New TOML model, named patterns, matchers, tiered decisions. |
 | 4. Agent adapters | Claude and Copilot input/output adapters. |
 | 5. Auditing | New JSONL record, truncation, error records. |
@@ -249,7 +249,7 @@ Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
 
 ## Testing
 
-Test-first: write acceptance tests from this spec before implementing phases 3–5.
+Test-first, per step: each step writes its acceptance tests before implementing (see `plan.md`).
 
 - **Acceptance tests** (primary) run the binary end to end: fixture payload on stdin + fixture config → assert stdout JSON, exit code, and audit record (`pretty_assertions`).
 - Fixtures: `tests/fixtures/claude/…`, `tests/fixtures/copilot/…`. Initial fixtures come from documented payload examples; later, real captured payloads (via `level = "all"`, `max_value_len = 0`) are copied in. Document a `jq` one-liner for extracting a payload from an audit record into a fixture.

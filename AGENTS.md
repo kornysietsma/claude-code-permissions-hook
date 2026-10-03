@@ -107,6 +107,10 @@ And outputs decisions to stdout:
 - Unit tests in each module
 - Integration test inputs in `tests/` directory
 - Example config in `example.toml`
+- Coverage goal: enough to be confident things work, not exhaustive. Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity (concurrency, process orchestration, elaborate setup)
+
+### Project knowledge
+- Record decisions, preferences and context in `spec.md`, `plan.md` or this file — not in agent memory files, which don't travel between machines
 
 ## This is a Rust project
 
