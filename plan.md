@@ -17,26 +17,29 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 
 ## Current state (after step 5.3)
 
-The Claude side of the engine is complete: config loading, all six matchers, tiered decisions, error handling. Auditing is **off** until phase 5 (deliberately, rather than stubbed). 
+Both agents are supported end to end: config loading, all six matchers, tiered decisions, Claude and Copilot adapters, error handling and auditing (records are written by `main`). What remains is `validate` output (phase 6), examples and docs (7), and verification against the real agents (8, 9).
 
 ### Modules as built
 
 | Module | Contents |
 |---|---|
-| `main.rs` | clap CLI (`run`/`validate`, `Target { agent, config }`). `run` builds `Context { home }` from `std::env::home_dir()`, reads stdin, calls `lib::run`, prints `warnings` to stderr and `output` to stdout, **always exits 0**. `validate` loads the config, exits 1 on error; its summary is still an `info!` log, so it prints nothing by default (fixed in 6.1). Imports anyhow's trait as `Context as _` to avoid clashing with `tool_gate_hook::Context`. |
-| `lib.rs` | `Context { home }` (clock to be added in 5.1); `Outcome { output: Option<Value>, warnings: Vec<String> }` (audit to be added in 5.1); `run(agent, config_path, stdin, &Context) -> Outcome`. Order: parse JSON and `agent.parse()` first (failure → passthrough + warning), then `Config::load` (failure → `ask` with `tool-gate-hook config error (<path>): <details>`), then evaluate and render. |
-| `agent.rs` | `Agent { Claude, Copilot }` (clap `ValueEnum`); `default_config_path(home)`; `parse(&Value) -> Result<ToolCall>` (Claude arm done; **Copilot arm currently `bail!`s**); `render(Decision, reason) -> Value` (both arms written; Copilot arm untested); `ToolCall { tool_name, cwd }`; `string_field` helper (its error text says "not a Claude Code payload" — generalise in 4.1). |
+| `main.rs` | clap CLI (`run`/`validate`, `Target { agent, config }`). `run` builds `Context::new(home)` from `std::env::home_dir()`, reads stdin, calls `lib::run`, prints `warnings` to stderr, appends `outcome.audit` with `auditing::append` (a failure is only a stderr warning) and prints `output` to stdout; **always exits 0**. `validate` loads the config, exits 1 on error; its summary is still an `info!` log, so it prints nothing by default (fixed in 6.1). Imports anyhow's trait as `Context as _` to avoid clashing with `tool_gate_hook::Context`. |
+| `lib.rs` | `Context { home, clock: fn() -> DateTime<FixedOffset> }` with `Context::new(home)` using the local clock (tests override `clock`); `Outcome { output: Option<Value>, warnings: Vec<String>, audit: Option<(PathBuf, AuditRecord)> }`; `run(agent, config_path, stdin, &Context) -> Outcome`. Order: parse JSON and `agent.parse()` first (failure → passthrough + warning, plus an error audit record if the config loads quietly), then `Config::load` (failure → `ask` with `tool-gate-hook config error (<path>): <details>`, no audit), then evaluate, build the audit record and render. |
+| `agent.rs` | `Agent { Claude, Copilot }` (clap `ValueEnum`); `name()`; `default_config_path(home)`; `parse(&Value) -> Result<ToolCall>` (Claude: `tool_name`, `cwd`, rejects a non-`PreToolUse` `hook_event_name`; Copilot: `toolName`, `cwd`); `render(Decision, reason) -> Value`; `ToolCall { tool_name, cwd }`. Missing-field errors name the agent. |
 | `config.rs` | `Config { audit: Option<AuditConfig>, policy }`, `Config::load(path)` / `from_toml(str)`. `AuditConfig { file, level, max_value_len }`, `AuditLevel { Off, Matched, All }`. Each `[[rule]]` is parsed from a `toml::Table` separately so errors read `rule #N (description): match."path": <matcher>: …`. `deny_unknown_fields` everywhere. `OneOrMany` for `regex`/`not_regex`; `@name` resolves `[patterns]`. Load errors don't include the path — callers add it. |
 | `policy.rs` | `Decision { Allow, Ask, Deny }` (`Ord`, serde lowercase, `as_str`); `Policy { rules }`; `Rule { index (1-based), decision, tool: Option<Regex> (anchored), description, reason, fields }` with `reason()` (custom or `tool-gate-hook: <decision> by rule #N (description)`); `FieldCondition { path, matchers }`; `FieldMatcher { Regex, NotRegex, Equals, Glob, Under(Vec<String>), Exists }`; `Policy::evaluate(&payload, &ToolCall, &Context) -> Evaluation { matches: Vec<&Rule> }` with `decided_by()`. Values match as text (strings; numbers/bools as JSON text); null/arrays/objects/missing fail every matcher except `exists`. |
 | `paths.rs` | `expand_dir(dir, home, cwd)` (`~`, `~/…`, `{cwd}`), `resolve(path, cwd)` (canonicalise longest existing prefix of the raw path, then clean up the remainder textually). Private module. |
-| `auditing.rs` | Only `truncate_json_strings` (pub, unit-tested) survives; the rest is rebuilt in phase 5 (rename the module to `audit.rs` then if it reads better). |
+| `auditing.rs` | `AuditRecord` (serialised as the spec's JSONL record, plus an optional `error`), built by `for_evaluation` (level filtering: `off` nothing, `matched` only if a rule matched, `all` everything) or `for_error` (raw stdin as a truncated string; every level but `off`); `Invocation { agent, config_path, started, finished }`; `truncate_json_strings` (marker `…[truncated, N chars]`, `0` disables); `append(file, &record)` (create+append, `File::lock`, one line; does not create parent directories). `ts` is the start-of-run clock read, `duration_us` the difference of two reads. |
 
 ### Tests and fixtures
 
 - `tests/config.rs`: config parsing and error messages via `Config::from_toml`.
-- `tests/claude.rs`: in-process acceptance tests. Helpers: `fixture(name)`, `with_field(name, &[path], json)`, `run_claude(config, stdin) -> Option<Value>`, `run_claude_outcome(...) -> Outcome`, `no_home()`, `decision(&output)`, `reason(&output)`, and `path_fixture()` / `run_under(...)` (temp tree with a symlink escaping the project). For Copilot, consider moving shared helpers into `tests/common/mod.rs` rather than copying them.
-- `tests/smoke.rs`: spawns the binary with `HOME` set to a temp dir; covers missing `--agent`, default config path, exit 0 with `ask` on missing config, exit 0 on garbage stdin, `validate` failure.
+- `tests/claude.rs`: in-process acceptance tests. Helpers: `fixture(name)`, `with_field(name, &[path], json)`, `run_claude(config, stdin) -> Option<Value>`, `run_claude_outcome(...) -> Outcome`, `no_home()`, `decision(&output)`, `reason(&output)`, and `path_fixture()` / `run_under(...)` (temp tree with a symlink escaping the project).
+- `tests/copilot.rs`: Copilot output shape, lowercase tool names, `toolArgs` rules, config error as `ask`, and payload mismatches in both directions (small helpers copied rather than shared).
+- `tests/audit.rs`: whole-record comparisons with a fixed clock, level filtering, truncation and error records.
+- `tests/smoke.rs`: spawns the binary with `HOME` set to a temp dir; covers missing `--agent`, default config path, exit 0 with `ask` on missing config, exit 0 on garbage stdin, Copilot variants of the missing-config and mismatched-payload cases, the real audit file (two runs → two lines, an unwritable path only warns), `validate` failure.
 - `tests/fixtures/claude/{bash,read,write,edit,agent}.json`: current documented Claude payload shape (includes `permission_mode`, `effort`, `tool_use_id`, `prompt_id`).
+- `tests/fixtures/copilot/{bash,view,create,edit,glob,task}.json`: documented top-level shape; the `toolArgs` field names are unverified (see the README there; confirmed in 9.2).
 
 ### Interim files (replaced later)
 
@@ -46,7 +49,7 @@ The Claude side of the engine is complete: config loading, all six matchers, tie
 
 ### Dependencies
 
-`anyhow`, `clap`, `serde`, `serde_json`, `toml` 1.x, `regex`, `globset`, `chrono` (unused until 5.1), `log`, `env_logger`; dev: `pretty_assertions`, `tempfile`. Lints live in `[lints]` in `Cargo.toml`; never add `#![…]` lint attributes to source files.
+`anyhow`, `clap`, `serde`, `serde_json`, `toml` 1.x, `regex`, `globset`, `chrono`, `log`, `env_logger`; dev: `pretty_assertions`, `tempfile`. Lints live in `[lints]` in `Cargo.toml`; never add `#![…]` lint attributes to source files.
 
 ### Verifying with a real agent without disrupting daily use
 

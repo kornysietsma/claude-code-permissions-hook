@@ -52,7 +52,7 @@ Mid-rework (see `spec.md` and `plan.md`, which are the source of truth for the t
 - **src/agent.rs**: `Agent` enum (claude/copilot): default config paths, payload parsing, output rendering
 - **src/config.rs**: TOML parsing (`[audit]`, `[patterns]`, `[[rule]]`) and compilation to a `Policy`
 - **src/policy.rs**: compiled rules, field-path lookup, evaluation; `Decision` (allow < ask < deny)
-- **src/auditing.rs**: only the truncation helper for now; audit records return in plan step 5.1
+- **src/auditing.rs**: `AuditRecord` (evaluation and error records), value truncation, and `append` (locked JSONL write)
 
 ## Important Details
 
