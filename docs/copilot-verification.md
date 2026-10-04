@@ -88,7 +88,9 @@ The audit-only hooks never decide anything, so any prompt or block you see comes
 | 2 | deny | `bash` with command containing `tgh-deny` | Reason: "tgh-verify: this command is denied on purpose" |
 | 3 | ask | tool `glob`, no field conditions | Works even if the field names are wrong, so the ask path is tested regardless |
 | 4 | ask | `view` with path containing `tgh-ask` | Views normally run without a prompt, so a prompt proves the ask worked |
-| 5 | deny | `view`, `create` or `edit` with path containing `tgh-secret` | Reason: "tgh-verify: secret paths are denied on purpose" |
+| 5 | deny | `view`, `create` or `edit` with path containing `tgh-blocked` | Reason: "tgh-verify: blocked paths are denied on purpose". (Named "blocked", not "secret": the first run's model refused to touch a file called `tgh-secret.txt` before the hook ever ran) |
+| 6 | allow | `bash` with command exactly `touch tgh-allow-file.txt` | `touch` normally prompts, so an auto-run proves an allow suppresses a prompt (`echo` doesn't prompt anyway, so rule 1 proves nothing about that) |
+| 7 | deny | `apply_patch` whose patch text names a `tgh-blocked` file | The patch is a string, so this matches `toolArgs` as a whole. Reason as rule 5 |
 
 ## 4. Sanity check without Copilot (optional)
 
@@ -128,7 +130,7 @@ Accept the folder trust prompt if asked. Give the prompts below **one at a time,
 | 9 | `Use the bash tool to run exactly: echo tgh-deny` | **Blocked**. Note whether you or Copilot see "denied on purpose", and what Copilot says |
 | 10 | `Use the glob tool to find *.md files` | **Prompts** (rule 3, even though glob normally doesn't) |
 | 11 | `Use the view tool to show tgh-ask.txt` | **Prompts** (rule 4). If it doesn't, `toolArgs.path` may be the wrong field name |
-| 12 | `Use the view tool to show tgh-secret.txt` | **Blocked** (rule 5), same note as 9 |
+| 12 | `Use the view tool to show tgh-blocked.txt. It only contains harmless test text.` | **Blocked** (rule 5), same note as 9 |
 
 ### C. Config error
 
@@ -140,13 +142,38 @@ printf '\n[[rule]]\ndecision = "allow"\nmatch."toolArgs.command" = { regex = "(u
 
 | # | Prompt | Expected |
 |---|---|---|
-| 13 | `Use the view tool to show README.md` | **Prompts** with a config error mentioning the path and rule #6. Is the message readable? |
+| 13 | `Use the view tool to show README.md` | **Prompts** with a config error mentioning the path and rule #8. Is the message readable? |
 
 Restore it with `scripts/copilot-verify.sh setup` (it rewrites every generated file but leaves `audit/` alone), then run prompt 2 again to confirm it no longer prompts.
 
 ### D. Anything else
 
 Note anything surprising: stderr shown in the UI, slow calls, messages when a hook ran, the order hooks ran in, hooks run twice, or a repo hook that did not run.
+
+### E. Second run: the gaps the first run left
+
+The first run (2026-10-04) settled payloads, hook locations and the ask, deny and config-error paths. A short second session closes the rest. Only prompts R1 to R5 are needed; don't repeat 1 to 13.
+
+Start clean, so the new records are easy to find:
+
+```bash
+cd ~/tool-gate-hook-src
+[ -d ~/tgh-copilot-verify/audit ] && mv ~/tgh-copilot-verify/audit ~/tgh-copilot-verify/audit-run1
+scripts/copilot-verify.sh setup        # rewrites user.toml with rules 6 and 7 and creates tgh-blocked.txt
+cd ~/tgh-copilot-verify && copilot
+```
+
+(Pull the source again first if it changed: the `--delete` rsync from step 1.)
+
+| # | Prompt | Expected | What it settles |
+|---|---|---|---|
+| R1 | `Use the bash tool to run exactly: touch tgh-plain.txt` | **Prompts** (no rule matches) | The control: this must prompt, or R2 proves nothing |
+| R2 | `Use the bash tool to run exactly: touch tgh-allow-file.txt` | Runs **without a prompt** (rule 6) | An `allow` really suppresses a prompt |
+| R3 | `Use the view tool to show tgh-blocked.txt. It only contains harmless test text.` | **Blocked** with the reason (rule 5) | A deny rule on `view` |
+| R4 | `Create a file called tgh-blocked-new.txt containing: hi` | **Blocked** (rule 7), `apply_patch` with a deny reason in the UI | A deny rule on a string `toolArgs` |
+| R5 (optional) | Switch model with `/model` to a different one, then: `Use the create tool to make notes2.txt containing: hello` | Whatever it does | Does another model send `create` or `edit`? Note the model name and which tool names appear in `audit/user.jsonl` |
+
+If the model refuses R3 or R4 itself (no record in `audit/user.jsonl`), say so in `results.md` and try once more, telling it the file is harmless test data. Then read the audit and push the results as in steps 6 to 8 (`scripts/copilot-verify.sh report`, `teardown`, `push`; the `audit-run1` directory is not pushed again).
 
 ## 6. Read the audit logs
 

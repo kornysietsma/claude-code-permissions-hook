@@ -66,9 +66,24 @@ match."toolArgs.path" = { regex = 'tgh-ask' }
 [[rule]]
 decision = "deny"
 tool = "view|create|edit"
-description = "tgh-secret paths"
-reason = "tgh-verify: secret paths are denied on purpose"
-match."toolArgs.path" = { regex = 'tgh-secret' }
+description = "tgh-blocked paths"
+reason = "tgh-verify: blocked paths are denied on purpose"
+match."toolArgs.path" = { regex = 'tgh-blocked' }
+
+# touch normally prompts (tgh-plain.txt is the control), so an auto-run proves the allow worked
+[[rule]]
+decision = "allow"
+tool = "bash"
+description = "touch tgh-allow-file"
+match."toolArgs.command" = { regex = '^touch tgh-allow-file\.txt$' }
+
+# File changes arrive as apply_patch with a string toolArgs
+[[rule]]
+decision = "deny"
+tool = "apply_patch"
+description = "patches naming tgh-blocked"
+reason = "tgh-verify: blocked paths are denied on purpose"
+match."toolArgs" = { regex = '(?m)^\*\*\* (Add|Update|Delete) File: .*tgh-blocked' }
 EOF
 
   # Repo-level and .claude cross-read configs: audit only, no rules, so they never decide anything.
@@ -117,7 +132,7 @@ EOF
 
   printf '# tgh-copilot-verify\n\nScratch repo for verifying tool-gate-hook with Copilot CLI.\n' > "$DIR/README.md"
   printf 'hello\n' > "$DIR/tgh-ask.txt"
-  printf 'not really secret\n' > "$DIR/tgh-secret.txt"
+  printf 'harmless test text\n' > "$DIR/tgh-blocked.txt"
 
   "$BIN" validate --agent copilot --config "$DIR/user.toml" > /dev/null
   "$BIN" validate --agent copilot --config "$DIR/.github/hooks/tool-gate-hook.toml" > /dev/null
