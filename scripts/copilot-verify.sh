@@ -101,7 +101,7 @@ EOF
 }
 EOF
 
-  # Repo-level: a cwd probe, plus the hook with a RELATIVE --config as the spec proposes.
+  # Repo-level: a cwd probe, plus the hook with a RELATIVE --config, as the README recommends.
   render > "$DIR/.github/hooks/tool-gate-hook.json" <<'EOF'
 {
   "version": 1,

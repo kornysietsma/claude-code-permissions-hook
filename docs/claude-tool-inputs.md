@@ -38,6 +38,21 @@ Verified against Claude Code 2.1.289 (2026-10-04):
 
 The [official tools reference](https://code.claude.com/docs/en/tools-reference) lists the current tool names but not their `tool_input` fields. Tools it no longer lists, so not documented here: `MultiEdit`, `LS`, `BashOutput` and `KillShell` (the last two are replaced by `TaskOutput` and `TaskStop`).
 
+## Decision output
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow|deny|ask",
+    "permissionDecisionReason": "..."
+  },
+  "suppressOutput": true
+}
+```
+
+No output means Claude continues its normal permission flow (Claude's `"defer"` decision means the same, so it isn't used). Claude treats exit code 2 as a block, so `tool-gate-hook run` always exits 0 and never signals a decision through the exit code.
+
 ## Source attribution
 
 Anthropic does not publish a complete schema for `tool_input`. The per-tool tables below are compiled from:

@@ -154,7 +154,8 @@ The details are in [Copilot payloads](./docs/copilot-tool-inputs.md).
 - [Configuration guide](./docs/configuration-guide.md): the full config reference
 - [Claude payloads](./docs/claude-tool-inputs.md) and [Copilot payloads](./docs/copilot-tool-inputs.md): what the agents send, i.e. what rules can match
 - [`examples/`](./examples): ready-to-copy configs, including an illustrative Mermaid workflow
-- [`spec.md`](./spec.md) and [`plan.md`](./plan.md): design and implementation plan
+- [Copilot verification](./docs/copilot-verification.md): how Copilot CLI was checked on a real install, repeatable for a new Copilot version
+- [Review findings](./docs/review-findings.md): the reviews before and after the rework from `claude-code-permissions-hook`
 
 ## Development
 

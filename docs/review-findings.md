@@ -6,14 +6,14 @@ This is a light review of `claude-code-permissions-hook` at commit `acf5d88`, do
 
 | # | Finding | Status | Addressed by |
 |---|---|---|---|
-| 1 | **Typos in config keys are silently ignored.** `comand_regex = "rm"` in a deny rule passes `validate` and never matches, so a mistyped deny rule silently disappears. | confirmed | `deny_unknown_fields` (step 2.1) |
-| 2 | **A rule with no main regex never matches.** `[[deny]] tool = "Bash"` with no `command_regex` does nothing. An exclude regex without a main regex is ignored too. | by reading | Rules with no `match` entries match on `tool` alone (2.1/2.2) |
-| 3 | **Fields that don't apply to the rule's tool are silently ignored.** `command_regex` on a `Read` rule is accepted and never evaluated. | by reading | Field paths address the payload directly, and `validate` warns on unknown roots (6.1) |
-| 4 | **`Task` rules OR their conditions.** A rule with both `subagent_type` and `prompt_regex` matches if *either* matches, which is surprising for a deny or allow. | by reading | All `match` entries are ANDed (2.2) |
-| 5 | **A payload missing any expected field fails the hook with exit 1.** `HookInput` requires `session_id`, `transcript_path` and `hook_event_name`. Claude treats exit 1 as a non-blocking error, so the call fails open with only a stderr message. Under Copilot, exit 1 would mean deny. | confirmed | Payload kept as raw `Value`, mismatch passes through, always exit 0 (2.2/2.3) |
-| 6 | **Config errors fail open silently.** A missing or broken config makes `run` exit 1, so Claude proceeds through its normal flow and nothing visible tells you the hook is off. | by reading | Config error produces `ask` (2.3) |
-| 7 | **`validate` prints nothing.** Its summary is logged at `info!`, but the default log filter is `warn`, so a valid config produces no output at all. | confirmed | Print the summary to stdout (6.1) |
-| 8 | **Only hardcoded tools can be ruled on.** Tools are limited to `Read`/`Write`/`Edit`/`Glob`/`Bash`/`Task`. Rules for any other tool (Grep, WebFetch, MCP tools, `Agent`) are silently ignored, and tool matching is exact-string only. | by reading | `tool` regex plus field paths (2.1/2.2) |
+| 1 | **Typos in config keys are silently ignored.** `comand_regex = "rm"` in a deny rule passes `validate` and never matches, so a mistyped deny rule silently disappears. | confirmed | `deny_unknown_fields` |
+| 2 | **A rule with no main regex never matches.** `[[deny]] tool = "Bash"` with no `command_regex` does nothing. An exclude regex without a main regex is ignored too. | by reading | Rules with no `match` entries match on `tool` alone |
+| 3 | **Fields that don't apply to the rule's tool are silently ignored.** `command_regex` on a `Read` rule is accepted and never evaluated. | by reading | Field paths address the payload directly, and `validate` warns on unknown roots |
+| 4 | **`Task` rules OR their conditions.** A rule with both `subagent_type` and `prompt_regex` matches if *either* matches, which is surprising for a deny or allow. | by reading | All `match` entries are ANDed |
+| 5 | **A payload missing any expected field fails the hook with exit 1.** `HookInput` requires `session_id`, `transcript_path` and `hook_event_name`. Claude treats exit 1 as a non-blocking error, so the call fails open with only a stderr message. Under Copilot, exit 1 would mean deny. | confirmed | Payload kept as raw `Value`, mismatch passes through, always exit 0 |
+| 6 | **Config errors fail open silently.** A missing or broken config makes `run` exit 1, so Claude proceeds through its normal flow and nothing visible tells you the hook is off. | by reading | Config error produces `ask` |
+| 7 | **`validate` prints nothing.** Its summary is logged at `info!`, but the default log filter is `warn`, so a valid config produces no output at all. | confirmed | Print the summary to stdout |
+| 8 | **Only hardcoded tools can be ruled on.** Tools are limited to `Read`/`Write`/`Edit`/`Glob`/`Bash`/`Task`. Rules for any other tool (Grep, WebFetch, MCP tools, `Agent`) are silently ignored, and tool matching is exact-string only. | by reading | `tool` regex plus field paths |
 
 ## Design lessons
 
@@ -36,13 +36,13 @@ This is a light review of `claude-code-permissions-hook` at commit `acf5d88`, do
 - **Tests that don't check behaviour:** `test_hook_result_constructors` tests struct literals, and the "example config is valid" tests depend on personal paths in `example.toml`.
 - **Integration tests bypass the binary.** They call the library API directly, so CLI wiring, stdout format and exit codes are untested. The rework adds smoke tests that run the binary.
 
-## Fixed in phase 0
+## Fixed before the rework
 
-- Removed unused `lazy_static`, `derive_builder` and `itertools`. Replaced `nix` flock with std `File::lock`. All dependencies are at their latest stable versions (step 0.1).
+- Removed unused `lazy_static`, `derive_builder` and `itertools`. Replaced `nix` flock with std `File::lock`. All dependencies are at their latest stable versions.
 
-Nothing else was fixed: every finding above is in code that phases 1–5 replace.
+Nothing else was fixed: every finding above was in code that the rework replaced.
 
-# Review findings (phase 10, before the PR)
+# Review findings (final review, before the PR)
 
 A senior-engineer review of the finished rework (`src/`, `tests/`, `scripts/copilot-verify.sh`, docs) against the engineering-standards skill. The quality gate passed and `cargo outdated` was clean before and after. Overall the code held up: a pure `run` with an injected `Context`, errors as values, no unwraps in production code, no dead modules, small functions, and comments only where something is surprising.
 
@@ -62,4 +62,4 @@ Looked at and left as they are:
 - `AuditRecord` canonicalises the config path, a filesystem read outside `Config::load`. It is a read with a fallback, and moving it would only spread the path handling around.
 - `Decision::as_str` and `AuditLevel::as_str` repeat their serde names. Plain `match`es are clearer than going through serde for a string.
 - `scripts/copilot-verify.sh` is fine for a hand-run kit: `set -euo pipefail`, quoted expansions except the deliberate `$flags`, and a dry-run `push`. No changes.
-- The repository and its directory are still named `claude-code-permissions-hook`; renaming them is a post-merge step for the author (see `plan.md`).
+- The repository and its directory are still named `claude-code-permissions-hook`; renaming them is a post-merge step for the author.
