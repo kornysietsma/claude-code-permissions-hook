@@ -15,9 +15,9 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell notes: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex). zsh needs `--include='*.md'` quoted. `python3` is blocked by a hook (use `uv run`, or perl/sed).
 
-## Current state (after step 8.1)
+## Current state (after step 8.2)
 
-All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. What remains is **verification against the real agents** (8.2 and phase 9; Claude is verified) and the final review and PR (phase 10). Verification can change fixtures, examples and docs, and code only if a payload turns out different from the documented shape.
+All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. What remains is **verification against the real agents** (phase 9; Claude is verified, and the user-level hook is live with the legacy-python rule) and the final review and PR (phase 10). Verification can change fixtures, examples and docs, and code only if a payload turns out different from the documented shape.
 
 ### Modules
 
@@ -82,7 +82,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
     - the audit log contains every call
   - Capture representative payloads into `tests/fixtures/claude/` with the `jq` one-liner (scrub private paths and ids), and confirm or correct the `Task` → `Agent` naming and the `docs/claude-tool-inputs.md` fields. Update the fixtures, examples and docs if the shape differs, and remove the corresponding "unverified" notes.
 
-- [ ] **8.2 Switch user-level hook (manual, optional)**
+- [x] **8.2 Switch user-level hook (manual, optional)**
   - The user moves their real config to `~/.config/tool-gate-hook/claude.toml` and registers the hook in `~/.claude/settings.json`.
   - **Verify:** one normal working session with no surprises.
 
