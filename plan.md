@@ -19,7 +19,7 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot`, which is **pu
 - The user's **global tool-gate-hook is live in Claude sessions** (`~/.claude/settings.json` registers `~/.cargo/bin/tool-gate-hook run --agent claude`; config `~/.config/tool-gate-hook/claude.toml`, audit log `~/.local/share/tool-gate-hook/claude.jsonl`). Its one rule denies `python`, `pip`, `pipenv`, `virtualenv` and `pyenv` as a command. It treats quoted text as a command boundary, so a Bash command (a heredoc, a commit message) with a line starting `python…` or `pip…` is blocked. Write such text to a file with the Write tool and use `git commit -F <file>`; use `uv run` for any Python.
 - zsh quirks: `echo` expands `\n` (write JSON with the Write tool, not `echo`), unquoted `$VAR` isn't word-split (use arrays or inline flags), and a bare `=====` is an error. In `perl -pi -e 's|…|…|'`, a `|` inside the pattern or replacement breaks the substitution: use the Edit tool for text containing `|`. macOS `sed` needs `-E` for alternation.
 - A safety check blocks `bash -c "$var"` with shell variables; spell commands out or write a small script file.
-- The installed binary `~/.cargo/bin/tool-gate-hook` is built from the current `src/` (no code has changed since step 8). Rebuild with `cargo install --path .` only if `src/` changes.
+- The installed binary `~/.cargo/bin/tool-gate-hook` is built from step 8's `src/`. Step 10.1 changed `src/` without changing behaviour (dead dependencies removed, small refactors); rebuild with `cargo install --path .` after the merge.
 - Leftovers outside the repo, safe to delete: the scratch project `~/Dropbox/prj/ai/tgh-verify/` (the phase 8 Claude run) and `~/tgh-copilot-results/` (the raw Copilot audit logs from phase 9, with the work machine's username and paths; don't commit them).
 
 ## Current state
@@ -41,10 +41,10 @@ All code is done and verified against real installs: both agents (Claude and Cop
 
 ### Tests, fixtures, docs, scripts
 
-- `tests/`: `config.rs`, `claude.rs`, `copilot.rs`, `audit.rs`, `examples.rs` (also the mermaid scenarios and the legacy-python rule in `examples/claude.toml`), `smoke.rs` (real binary, `HOME` set to a temp dir). `tests/README.md` has the layout and the `jq` capture one-liner. `tests/copilot.rs` copies small helpers (`fixture_in`, `run_outcome`) from `tests/claude.rs`.
+- `tests/`: `config.rs`, `claude.rs`, `copilot.rs`, `audit.rs`, `examples.rs` (also the mermaid scenarios and the legacy-python rule in both agents' examples), `smoke.rs` (real binary, `HOME` set to a temp dir). `tests/README.md` has the layout and the `jq` capture one-liner. `tests/common/mod.rs` holds the helpers shared by `claude.rs`, `copilot.rs` and `audit.rs`.
 - Fixtures (real shapes, placeholder values): `tests/fixtures/claude/{bash,read,write,edit,agent,subagent_handback}.json`, `tests/fixtures/copilot/{bash,view,create,apply_patch,rg,glob,task}.json`, `tests/fixtures/copilot_via_claude/{bash,read,edit}.json`.
 - `examples/{claude,copilot,mermaid-claude}.toml` (validated; mermaid and the `@legacy_python` deny rule are scenario-tested).
-- Docs: `README.md`, `docs/configuration-guide.md`, `docs/claude-tool-inputs.md`, `docs/copilot-tool-inputs.md`, `docs/copilot-verification.md`, `tests/README.md`, `AGENTS.md`. `docs/review-findings.md` is the historical pre-rework review (it still quotes the old format deliberately).
+- Docs: `README.md`, `docs/configuration-guide.md`, `docs/claude-tool-inputs.md`, `docs/copilot-tool-inputs.md`, `docs/copilot-verification.md`, `tests/README.md`, `AGENTS.md`. `docs/review-findings.md` has the historical pre-rework review (it still quotes the old format deliberately) and the phase 10 review.
 - `scripts/copilot-verify.sh` (`setup` / `report` / `push [-n]` / `teardown`) drives the work-machine verification; it is a bash script, not covered by tests (it was exercised by hand in a sandbox).
 
 ### Verified facts worth remembering
@@ -55,7 +55,7 @@ All code is done and verified against real installs: both agents (Claude and Cop
 
 ### Dependencies
 
-`anyhow`, `clap`, `serde`, `serde_json`, `toml` 1.x, `regex`, `globset`, `chrono`, `log`, `env_logger`; dev: `pretty_assertions`, `tempfile`. Lints live in `[lints]` in `Cargo.toml`; never add `#![…]` lint attributes to source files.
+`anyhow`, `clap`, `serde`, `serde_json`, `toml` 1.x, `regex`, `globset`, `chrono`; dev: `pretty_assertions`, `tempfile`. Lints live in `[lints]` in `Cargo.toml`; never add `#![…]` lint attributes to source files.
 
 ---
 
@@ -76,12 +76,19 @@ All code is done and verified against real installs: both agents (Claude and Cop
 
 ### Phase 10: Review and PR
 
-- [ ] **10.1 Full senior-engineer review**
+- [x] **10.1 Full senior-engineer review**
   - Review the whole codebase against the engineering-standards skill: clarity, minimal comments, pure functions, errors as values, no dead code, latest dependencies. Include `tests/` and `scripts/copilot-verify.sh`.
   - Fix the findings and update `docs/review-findings.md` with what was addressed.
   - Known loose ends to settle here: the README's "See LICENSE file" line but there is no `LICENSE` file; the repository directory and remote are still named `claude-code-permissions-hook`; `tests/copilot.rs` copies small helpers from `tests/claude.rs` (consider `tests/common/mod.rs` if it reads better); the legacy-python rule treats quoted text as a command boundary (a known limit of regex matching; decide whether to document it in the configuration guide).
+  - Outcome (decided with the user): eight findings fixed, listed in `docs/review-findings.md`. `log`/`env_logger` removed as unused (no `RUST_LOG`); MIT licence; shared test helpers in `tests/common/mod.rs`; the regex limit documented. The repository rename is left for after the merge (below).
   - **Verify:** the quality gate passes, and `cargo outdated` is clean.
 
 - [ ] **10.2 PR**
   - Push the branch (already on `origin`) and open a PR against `main` summarising the changes, the verification done on both agents, and anything remaining (the untested items above).
   - **Verify:** the user approves the PR description before it is created.
+
+### After the merge (by the user)
+
+- Rename the GitHub repository to `tool-gate-hook` (GitHub redirects the old URL) and update the `origin` URL; rename the local directory. Add `repository` to `Cargo.toml` then.
+- Rebuild the installed hook: `cargo install --path .`.
+- The `legacy_python` deny rule replaces the old Python-based check on both machines. At home it is already live (the only `PreToolUse` command hook besides the docs helper). On the work machine, install the binary, copy the pattern and rule from `examples/copilot.toml` (and `examples/claude.toml` if Claude Code is used there) into `~/.config/tool-gate-hook/`, register the hook, then remove the old check.

@@ -149,7 +149,8 @@ pub fn append(file: &Path, record: &AuditRecord) -> Result<()> {
         .append(true)
         .open(file)
         .with_context(|| format!("cannot open {}", file.display()))?;
-    log.lock()?;
+    log.lock()
+        .with_context(|| format!("cannot lock {}", file.display()))?;
     log.write_all(line.as_bytes())
         .with_context(|| format!("cannot write {}", file.display()))
 }

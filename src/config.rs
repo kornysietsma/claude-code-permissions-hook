@@ -1,4 +1,4 @@
-use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule};
+use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule, rule_label};
 use anyhow::{Context, Result, anyhow, bail};
 use globset::GlobBuilder;
 use regex::Regex;
@@ -135,25 +135,20 @@ fn compile_rule(
     table: toml::Table,
     patterns: &BTreeMap<&str, Regex>,
 ) -> Result<Rule> {
-    let description = table
-        .get("description")
-        .and_then(|d| d.as_str())
-        .map(|d| format!(" ({d})"))
-        .unwrap_or_default();
-    let context = || format!("rule #{index}{description}");
+    let label = rule_label(index, table.get("description").and_then(|d| d.as_str()));
 
-    let raw: RawRule = table.try_into().with_context(context)?;
+    let raw: RawRule = table.try_into().with_context(|| label.clone())?;
     let tool = raw
         .tool
         .map(|tool| Regex::new(&format!("^(?:{tool})$")))
         .transpose()
-        .with_context(|| format!("{}: tool", context()))?;
+        .with_context(|| format!("{label}: tool"))?;
     let fields = raw
         .fields
         .into_iter()
         .map(|(path, field)| {
             let matchers = compile_field(field, patterns)
-                .with_context(|| format!("{}: match.\"{path}\"", context()))?;
+                .with_context(|| format!("{label}: match.\"{path}\""))?;
             Ok(FieldCondition { path, matchers })
         })
         .collect::<Result<_>>()?;

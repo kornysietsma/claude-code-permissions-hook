@@ -99,22 +99,34 @@ fn mermaid_unlisted_tools_fall_through_to_the_user() {
     assert_eq!(file("Edit", "/tmp/mermaid/a.mmd"), None);
 }
 
-fn claude_example(command: &str) -> Option<Value> {
-    let payload = json!({
-        "hook_event_name": "PreToolUse",
-        "cwd": "/Users/someone/prj/demo",
-        "tool_name": "Bash",
-        "tool_input": { "command": command },
-    });
-    let config = examples_dir().join("claude.toml");
+/// The decision object from running a shell command through the agent's example config
+fn example_shell_decision(agent: Agent, command: &str) -> Option<Value> {
+    let payload = match agent {
+        Agent::Claude => json!({
+            "hook_event_name": "PreToolUse",
+            "cwd": "/Users/someone/prj/demo",
+            "tool_name": "Bash",
+            "tool_input": { "command": command },
+        }),
+        Agent::Copilot => json!({
+            "cwd": "/Users/someone/prj/demo",
+            "toolName": "bash",
+            "toolArgs": { "command": command },
+        }),
+    };
+    let config = examples_dir().join(format!("{}.toml", agent.name()));
     let context = Context::new(PathBuf::from("/nonexistent-home"));
-    run(Agent::Claude, &config, &payload.to_string(), &context).output
+    let output = run(agent, &config, &payload.to_string(), &context).output?;
+    match agent {
+        Agent::Claude => Some(output["hookSpecificOutput"].clone()),
+        Agent::Copilot => Some(output),
+    }
 }
 
-fn denied_legacy_python(command: &str) -> bool {
-    claude_example(command).is_some_and(|o| {
-        o["hookSpecificOutput"]["permissionDecision"] == "deny"
-            && o["hookSpecificOutput"]["permissionDecisionReason"]
+fn denied_legacy_python(agent: Agent, command: &str) -> bool {
+    example_shell_decision(agent, command).is_some_and(|d| {
+        d["permissionDecision"] == "deny"
+            && d["permissionDecisionReason"]
                 .as_str()
                 .is_some_and(|r| r.contains("uv run"))
     })
@@ -138,7 +150,9 @@ fn legacy_python_commands_are_denied_wherever_a_command_starts() {
         "echo `python -V`",
         "ls\npython x.py",
     ] {
-        assert!(denied_legacy_python(command), "{command}");
+        for agent in [Agent::Claude, Agent::Copilot] {
+            assert!(denied_legacy_python(agent, command), "{agent:?}: {command}");
+        }
     }
 }
 
@@ -154,6 +168,11 @@ fn uv_and_unrelated_commands_are_not_denied_as_legacy_python() {
         "cat python.txt",
         "ls pythonista",
     ] {
-        assert!(!denied_legacy_python(command), "{command}");
+        for agent in [Agent::Claude, Agent::Copilot] {
+            assert!(
+                !denied_legacy_python(agent, command),
+                "{agent:?}: {command}"
+            );
+        }
     }
 }

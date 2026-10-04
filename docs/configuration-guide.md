@@ -130,6 +130,15 @@ match."tool_input.file_path" = { under = ["{cwd}", "~/notes", "/tmp/mermaid"] }
 
 Prefer `under` to a regex for path checks; it doesn't need a `parent_dir` safety net.
 
+### Regexes see text, not shell syntax
+
+A command is matched as plain text: quotes, heredocs and comments mean nothing to a regex. That cuts both ways:
+
+- **Allow rules** can be fooled into matching more than you meant, which is why they should carry `not_regex = "@shell_chain"` and anchor with `^`. An over-broad allow is the dangerous mistake.
+- **Deny rules** that look for a command "wherever a command starts" also fire on quoted text that merely looks like one. The `legacy_python` pattern in [`examples/claude.toml`](../examples/claude.toml) and [`examples/copilot.toml`](../examples/copilot.toml) treats a newline as a command boundary, so a commit message or heredoc with a line starting `pip …` is denied too. That's a false positive, not a hole: the model sees the reason and can write the text to a file instead.
+
+When a deny rule is too eager, narrow its regex or add a `not_regex`; don't try to parse shell quoting in a regex.
+
 ## How decisions are made
 
 1. **Every** rule is evaluated, in file order, and all matches are collected.
@@ -150,8 +159,6 @@ Shell chaining (`a && b`) is deliberately not parsed. Instead, give allow rules 
 | Config can't be loaded (missing file, bad TOML, invalid regex or glob, unknown `@pattern`, unknown key) | Output **`ask`** with the reason `tool-gate-hook config error (<path>): <details>`, and the same on stderr. Loud, but never locks you out. |
 | stdin isn't valid JSON, or isn't from the `--agent` you configured | Passthrough, a warning on stderr, and an error record in the audit log if the config loads. Checked before the config, so a payload meant for another agent passes quietly even when the config is broken. |
 | Audit file can't be written | A warning on stderr; the decision is unaffected. |
-
-Diagnostics go to stderr; set `RUST_LOG=debug` for more.
 
 ## Audit log
 

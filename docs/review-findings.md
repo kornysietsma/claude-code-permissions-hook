@@ -41,3 +41,25 @@ This is a light review of `claude-code-permissions-hook` at commit `acf5d88`, do
 - Removed unused `lazy_static`, `derive_builder` and `itertools`. Replaced `nix` flock with std `File::lock`. All dependencies are at their latest stable versions (step 0.1).
 
 Nothing else was fixed: every finding above is in code that phases 1–5 replace.
+
+# Review findings (phase 10, before the PR)
+
+A senior-engineer review of the finished rework (`src/`, `tests/`, `scripts/copilot-verify.sh`, docs) against the engineering-standards skill. The quality gate passed and `cargo outdated` was clean before and after. Overall the code held up: a pure `run` with an injected `Context`, errors as values, no unwraps in production code, no dead modules, small functions, and comments only where something is surprising.
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | **Dead dependencies.** `log` and `env_logger` were initialised, but nothing called a `log` macro, so the README's "`RUST_LOG=debug` writes to stderr" was false. | Removed both and every `RUST_LOG` mention. Diagnostics are plain stderr lines; the audit log is the observability story. |
+| 2 | **Missing licence.** The README said "See LICENSE file" but there never was one. | Added an MIT `LICENSE`, plus `license` and `description` in `Cargo.toml`. |
+| 3 | **Duplicated rule label.** `config.rs` rebuilt the `rule #N (description)` text that `Rule::label` produces. | One `policy::rule_label`, used by both. |
+| 4 | **Unneeded public API.** `Outcome::passthrough_with_warning` was public and used once; `Outcome` derived an unused `Default`. | Inlined the constructor, dropped the derive. |
+| 5 | **Older clap attribute style.** `#[clap(...)]` throughout `main.rs`. | Now `#[command(...)]` / `#[arg(...)]`, the clap 4 names. |
+| 6 | **Audit lock error lacked context.** A failed `File::lock` reported a bare OS error. | Wrapped as `cannot lock <file>`. |
+| 7 | **Copied test helpers.** `tests/claude.rs`, `copilot.rs` and `audit.rs` each had their own fixture loader and temp-config runner. | Shared in `tests/common/mod.rs`. `examples.rs` and `smoke.rs` keep their own helpers, which differ. |
+| 8 | **Regex matching sees text, not shell syntax.** The `legacy_python` deny rule fires on quoted text (heredocs, commit messages) that has a line starting with one of its commands. It fired on the shell command that first tried to write this table. | Documented in the configuration guide ("Regexes see text, not shell syntax") and next to the pattern in both example configs. Accepted as a false positive, not a hole. |
+
+Looked at and left as they are:
+
+- `AuditRecord` canonicalises the config path, a filesystem read outside `Config::load`. It is a read with a fallback, and moving it would only spread the path handling around.
+- `Decision::as_str` and `AuditLevel::as_str` repeat their serde names. Plain `match`es are clearer than going through serde for a string.
+- `scripts/copilot-verify.sh` is fine for a hand-run kit: `set -euo pipefail`, quoted expansions except the deliberate `$flags`, and a dry-run `push`. No changes.
+- The repository and its directory are still named `claude-code-permissions-hook`; renaming them is a post-merge step for the author (see `plan.md`).

@@ -244,7 +244,7 @@ JSON Lines, one record per invocation, appended under `flock`.
 - `ts` is the clock read at the start of the run, with the local UTC offset and millisecond precision; `duration_us` is the difference between a read at the start and one at the end. The clock is injected (a plain function in `Context`) for testability.
 - `file` must be in an existing directory: the hook appends to the file (creating it) but does not create parent directories, so a bad path is only an audit write failure.
 
-Diagnostic logging (`log`/`env_logger`, `RUST_LOG`) stays on stderr as today.
+Diagnostics are plain stderr lines (warnings from `run`, errors from `validate`); there is no `log` crate or `RUST_LOG` (removed in phase 10 as unused; the audit log is the observability story).
 
 ## Error handling
 

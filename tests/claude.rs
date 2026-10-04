@@ -1,3 +1,6 @@
+mod common;
+
+use common::{no_home, run_with_config};
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use std::fs;
@@ -7,9 +10,7 @@ use tool_gate_hook::agent::ToolCall;
 use tool_gate_hook::{Agent, Config, Context, Outcome, run};
 
 fn fixture(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/claude/{name}.json"));
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    common::fixture("claude", name)
 }
 
 fn with_field(name: &str, path: &[&str], value: Value) -> String {
@@ -21,14 +22,7 @@ fn with_field(name: &str, path: &[&str], value: Value) -> String {
 }
 
 fn run_claude_outcome(config: &str, stdin: &str) -> Outcome {
-    let dir = TempDir::new().unwrap();
-    let config_path = dir.path().join("claude.toml");
-    fs::write(&config_path, config).unwrap();
-    run(Agent::Claude, &config_path, stdin, &no_home())
-}
-
-fn no_home() -> Context {
-    Context::new(PathBuf::from("/nonexistent-home"))
+    run_with_config(Agent::Claude, config, stdin)
 }
 
 fn run_claude(config: &str, stdin: &str) -> Option<Value> {

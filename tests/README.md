@@ -19,6 +19,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 | `copilot.rs` | The same for Copilot: flat output shape, lowercase tool names, `toolArgs` rules, mismatched payloads in both directions |
 | `audit.rs` | Audit records with a fixed clock, level filtering, truncation, error records |
 | `examples.rs` | Every file in `examples/` validates without warnings; the Mermaid example's scenarios |
+| `common/mod.rs` | Shared helpers: loading a fixture, running the hook with a config in a temp directory |
 | `smoke.rs` | A handful of tests that spawn the real binary: CLI wiring, exit codes, `validate` output, the real audit file |
 | `fixtures/claude/`, `fixtures/copilot/` | Sample hook payloads |
 

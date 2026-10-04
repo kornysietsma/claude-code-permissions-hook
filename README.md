@@ -135,7 +135,6 @@ Every rule is evaluated; the final decision is **deny > ask > allow** regardless
 - **`command not found` in the agent**: use the absolute path to the binary (see Install).
 - **Every call asks with "config error"**: run `tool-gate-hook validate --agent claude` to see the error.
 - **A rule never matches**: `validate` warns when a field path doesn't start with a payload key known for the agent (for example `toolArgs.path` in a Claude config). Set `level = "all"` and `max_value_len = 0` in `[audit]` and look at the real payloads in the log.
-- **More diagnostics**: `RUST_LOG=debug` writes to stderr.
 
 ## Status
 
@@ -165,4 +164,4 @@ See [tests/README.md](./tests/README.md) for the test layout and how to capture 
 
 ## License
 
-See LICENSE file for details.
+MIT; see [LICENSE](./LICENSE).

@@ -1,4 +1,7 @@
+mod common;
+
 use chrono::{DateTime, FixedOffset};
+use common::{no_home, run_with_config};
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use std::fs;
@@ -7,9 +10,7 @@ use tempfile::TempDir;
 use tool_gate_hook::{Agent, Context, Outcome, run};
 
 fn fixture(name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/claude/{name}.json"));
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    common::fixture("claude", name)
 }
 
 fn fixed_clock() -> DateTime<FixedOffset> {
@@ -40,7 +41,7 @@ fn run_claude_with(audit_settings: &str, rules: &str, stdin: &str) -> Run {
     .unwrap();
     let context = Context {
         clock: fixed_clock,
-        ..Context::new(PathBuf::from("/nonexistent-home"))
+        ..no_home()
     };
     let outcome = run(Agent::Claude, &config_path, stdin, &context);
     Run {
@@ -185,15 +186,7 @@ fn off_level_records_nothing() {
 
 #[test]
 fn no_audit_section_records_nothing() {
-    let dir = TempDir::new().unwrap();
-    let config_path = dir.path().join("claude.toml");
-    fs::write(&config_path, ALLOW_BASH).unwrap();
-    let context = Context {
-        clock: fixed_clock,
-        ..Context::new(PathBuf::from("/nonexistent-home"))
-    };
-
-    let outcome = run(Agent::Claude, &config_path, &fixture("bash"), &context);
+    let outcome = run_with_config(Agent::Claude, ALLOW_BASH, &fixture("bash"));
 
     assert!(outcome.output.is_some());
     assert_eq!(outcome.audit, None);
@@ -303,16 +296,7 @@ fn error_records_are_not_written_when_audit_is_off() {
 
 #[test]
 fn bad_payload_with_a_broken_config_warns_without_asking_or_recording() {
-    let dir = TempDir::new().unwrap();
-    let config_path = dir.path().join("claude.toml");
-    fs::write(&config_path, "not toml [").unwrap();
-
-    let outcome = run(
-        Agent::Claude,
-        &config_path,
-        "garbage",
-        &Context::new(PathBuf::from("/nonexistent-home")),
-    );
+    let outcome = run_with_config(Agent::Claude, "not toml [", "garbage");
 
     assert_eq!(outcome.output, None);
     assert_eq!(outcome.audit, None);

@@ -37,7 +37,7 @@ cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config e
 - **src/auditing.rs**: `AuditRecord` (evaluation and error records), value truncation and `append` (locked JSONL write).
 - **src/validate.rs**: the `validate` summary and its warnings.
 
-Docs: `README.md` (entry point), `docs/configuration-guide.md` (config reference), `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md` (payloads), `examples/` (example configs), `docs/review-findings.md` (the pre-rework review), `docs/copilot-verification.md` (the work-machine checklist, driven by `scripts/copilot-verify.sh`).
+Docs: `README.md` (entry point), `docs/configuration-guide.md` (config reference), `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md` (payloads), `examples/` (example configs), `docs/review-findings.md` (the pre-rework and phase 10 reviews), `docs/copilot-verification.md` (the work-machine checklist, driven by `scripts/copilot-verify.sh`).
 
 ## Important Details
 
@@ -50,7 +50,7 @@ Docs: `README.md` (entry point), `docs/configuration-guide.md` (config reference
 ### Logging and auditing
 
 - The **audit log** is the product's observability: JSONL at the `[audit]` `file`, with `level` `off | matched | all` and `max_value_len` truncation, written under `File::lock`. Details in `docs/configuration-guide.md`.
-- **Diagnostics** go to stderr via `log`/`env_logger`, controlled only by `RUST_LOG` (default `warn`). Warnings from `run` (bad payload, config error, audit write failure) are printed to stderr by `main`.
+- **Diagnostics** are plain stderr lines (there is no `log` crate or `RUST_LOG`): warnings from `run` (bad payload, config error, audit write failure) are printed to stderr by `main`.
 - Audit failures are non-fatal and never change the decision.
 
 ### Code Standards

@@ -35,7 +35,7 @@ impl Context {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Outcome {
     /// JSON to print on stdout; `None` passes through to the agent's normal permission flow
     pub output: Option<Value>,
@@ -67,10 +67,9 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
                         .map(|record| (audit.file, record))
                 });
             return Outcome {
+                output: None,
+                warnings: vec![format!("tool-gate-hook: ignoring payload: {e:#}")],
                 audit,
-                ..Outcome::passthrough_with_warning(format!(
-                    "tool-gate-hook: ignoring payload: {e:#}"
-                ))
             };
         }
     };
@@ -108,14 +107,4 @@ fn parse_payload(agent: Agent, stdin: &str) -> Result<(Value, ToolCall)> {
     let payload: Value = serde_json::from_str(stdin).context("stdin is not valid JSON")?;
     let call = agent.parse(&payload)?;
     Ok((payload, call))
-}
-
-impl Outcome {
-    pub fn passthrough_with_warning(warning: String) -> Self {
-        Outcome {
-            output: None,
-            warnings: vec![warning],
-            audit: None,
-        }
-    }
 }

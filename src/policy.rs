@@ -91,14 +91,8 @@ impl Rule {
                 .all(|field| field.matches(payload, call, context))
     }
 
-    /// How messages refer to this rule, e.g. `rule #2 (rm test files)`
     pub fn label(&self) -> String {
-        let description = self
-            .description
-            .as_ref()
-            .map(|d| format!(" ({d})"))
-            .unwrap_or_default();
-        format!("rule #{}{description}", self.index)
+        rule_label(self.index, self.description.as_deref())
     }
 
     pub fn reason(&self) -> String {
@@ -143,6 +137,14 @@ impl Decision {
             Decision::Ask => "ask",
             Decision::Deny => "deny",
         }
+    }
+}
+
+/// How messages refer to a rule, e.g. `rule #2 (rm test files)`
+pub(crate) fn rule_label(index: usize, description: Option<&str>) -> String {
+    match description {
+        Some(description) => format!("rule #{index} ({description})"),
+        None => format!("rule #{index}"),
     }
 }
 

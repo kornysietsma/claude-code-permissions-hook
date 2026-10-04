@@ -1,6 +1,5 @@
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
-use env_logger::Env;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -8,13 +7,13 @@ use std::process::ExitCode;
 use tool_gate_hook::{Agent, Config, Context, auditing, validate};
 
 #[derive(Debug, Parser)]
-#[clap(
+#[command(
     author,
     version,
     about = "PreToolUse hook that gates agent tool use with allow/deny/ask rules"
 )]
 struct Opts {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Commands,
 }
 
@@ -28,10 +27,10 @@ enum Commands {
 
 #[derive(Debug, clap::Args)]
 struct Target {
-    #[clap(short, long, value_enum)]
+    #[arg(short, long, value_enum)]
     agent: Agent,
     /// Defaults to ~/.config/tool-gate-hook/<agent>.toml
-    #[clap(short, long)]
+    #[arg(short, long)]
     config: Option<PathBuf>,
 }
 
@@ -82,8 +81,6 @@ fn run_validate_config(target: &Target) -> Result<()> {
 }
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(Env::default().default_filter_or("warn")).init();
-
     match Opts::parse().command {
         // A non-zero exit is a deny in Copilot, so `run` reports errors on stderr and passes through
         Commands::Run(target) => {

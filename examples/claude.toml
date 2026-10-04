@@ -16,6 +16,7 @@ parent_dir = '\.\.'
 # python, pip, pipenv, virtualenv or pyenv as the command itself: at the start, after a
 # separator (; | & newline ( ) ` $( ), and after any VAR=value prefixes, with an optional path.
 # `uv run python` doesn't match because python isn't in command position.
+# Quoting isn't understood, so a heredoc or commit message line starting `pip ...` is denied too.
 legacy_python = '(^|[;&|\n(`)])\s*([A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(\S*/)?(python(\d+(\.\d+)?)?|pip\d*|pipenv|virtualenv|pyenv)([\s;&|)`]|$)'
 
 # Allow: read-only inspection and the usual Rust workflow, without chaining

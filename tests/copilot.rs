@@ -1,30 +1,16 @@
+mod common;
+
+use common::run_with_config;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use std::fs;
-use std::path::PathBuf;
-use tempfile::TempDir;
-use tool_gate_hook::{Agent, Context, Outcome, run};
-
-fn fixture_in(agent: &str, name: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/{agent}/{name}.json"));
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
+use tool_gate_hook::Agent;
 
 fn fixture(name: &str) -> String {
-    fixture_in("copilot", name)
-}
-
-fn run_outcome(agent: Agent, config: &str, stdin: &str) -> Outcome {
-    let dir = TempDir::new().unwrap();
-    let config_path = dir.path().join("config.toml");
-    fs::write(&config_path, config).unwrap();
-    let context = Context::new(PathBuf::from("/nonexistent-home"));
-    run(agent, &config_path, stdin, &context)
+    common::fixture("copilot", name)
 }
 
 fn run_copilot(config: &str, stdin: &str) -> Option<Value> {
-    run_outcome(Agent::Copilot, config, stdin).output
+    run_with_config(Agent::Copilot, config, stdin).output
 }
 
 fn decision(output: &Option<Value>) -> Option<&str> {
@@ -199,8 +185,10 @@ tool = "Edit"
 match."tool_input" = { regex = '\*\*\* Update File: src/' }
 "#;
     let run_via_claude = |name: &str| {
-        let stdin = fixture_in("copilot_via_claude", name);
-        let output = run_outcome(Agent::Claude, config, &stdin).output.unwrap();
+        let stdin = common::fixture("copilot_via_claude", name);
+        let output = run_with_config(Agent::Claude, config, &stdin)
+            .output
+            .unwrap();
         output["hookSpecificOutput"]["permissionDecision"]
             .as_str()
             .unwrap()
@@ -214,7 +202,7 @@ match."tool_input" = { regex = '\*\*\* Update File: src/' }
 
 #[test]
 fn config_error_asks_in_copilot_format() {
-    let outcome = run_outcome(
+    let outcome = run_with_config(
         Agent::Copilot,
         "[[rule]]\ndecision = \"maybe\"",
         &fixture("bash"),
@@ -234,7 +222,11 @@ fn config_error_asks_in_copilot_format() {
 
 #[test]
 fn claude_payload_under_copilot_passes_through_even_with_a_broken_config() {
-    let outcome = run_outcome(Agent::Copilot, "not toml [", &fixture_in("claude", "bash"));
+    let outcome = run_with_config(
+        Agent::Copilot,
+        "not toml [",
+        &common::fixture("claude", "bash"),
+    );
 
     assert_eq!(outcome.output, None);
     assert_eq!(outcome.warnings.len(), 1);
@@ -247,7 +239,7 @@ fn claude_payload_under_copilot_passes_through_even_with_a_broken_config() {
 
 #[test]
 fn copilot_payload_under_claude_passes_through() {
-    let outcome = run_outcome(
+    let outcome = run_with_config(
         Agent::Claude,
         "[[rule]]\ndecision = \"deny\"",
         &fixture("bash"),
