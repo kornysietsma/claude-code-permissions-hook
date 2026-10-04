@@ -83,7 +83,7 @@ All code is done and verified against real installs: both agents (Claude and Cop
   - Outcome (decided with the user): eight findings fixed, listed in `docs/review-findings.md`. `log`/`env_logger` removed as unused (no `RUST_LOG`); MIT licence; shared test helpers in `tests/common/mod.rs`; the regex limit documented. The repository rename is left for after the merge (below).
   - **Verify:** the quality gate passes, and `cargo outdated` is clean.
 
-- [ ] **10.2 PR**
+- [x] **10.2 PR**
   - Push the branch (already on `origin`) and open a PR against `main` summarising the changes, the verification done on both agents, and anything remaining (the untested items above).
   - **Verify:** the user approves the PR description before it is created.
 
