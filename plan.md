@@ -1,6 +1,6 @@
 # tool-gate-hook: Implementation Plan
 
-Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; push and PR at phase 10).
+Implements `spec.md`. Work happens on branch `rework-for-copilot`, which is **pushed to `origin`** (a backup; it tracks `origin/rework-for-copilot`). Phases 0 to 9 are done and committed; what remains is the review and the PR (phase 10).
 
 ## How to work through this plan
 
@@ -13,11 +13,18 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - If a step shows that the spec is wrong or unclear, raise it with the user and update `spec.md` before continuing. Small decisions made along the way also go into `spec.md` once approved.
 - Record decisions and context in `spec.md`, `plan.md` or `AGENTS.md`, never in agent memory files.
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
-- Shell notes: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex). zsh needs `--include='*.md'` quoted. `python3` is blocked by a hook (use `uv run`, or perl/sed).
 
-## Current state (after step 9.2)
+### Shell and environment notes
 
-All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. Both agents have been verified on real installs (Claude in phase 8, with the user-level hook live and carrying the legacy-python rule; Copilot in phase 9, with real payload shapes in the fixtures, examples and docs). What remains is the final review and PR (phase 10), plus a few optional Copilot checks listed under "Things still marked unverified".
+- The user's **global tool-gate-hook is live in Claude sessions** (`~/.claude/settings.json` registers `~/.cargo/bin/tool-gate-hook run --agent claude`; config `~/.config/tool-gate-hook/claude.toml`, audit log `~/.local/share/tool-gate-hook/claude.jsonl`). Its one rule denies `python`, `pip`, `pipenv`, `virtualenv` and `pyenv` as a command. It treats quoted text as a command boundary, so a Bash command (a heredoc, a commit message) with a line starting `python…` or `pip…` is blocked. Write such text to a file with the Write tool and use `git commit -F <file>`; use `uv run` for any Python.
+- zsh quirks: `echo` expands `\n` (write JSON with the Write tool, not `echo`), unquoted `$VAR` isn't word-split (use arrays or inline flags), and a bare `=====` is an error. In `perl -pi -e 's|…|…|'`, a `|` inside the pattern or replacement breaks the substitution: use the Edit tool for text containing `|`. macOS `sed` needs `-E` for alternation.
+- A safety check blocks `bash -c "$var"` with shell variables; spell commands out or write a small script file.
+- The installed binary `~/.cargo/bin/tool-gate-hook` is built from the current `src/` (no code has changed since step 8). Rebuild with `cargo install --path .` only if `src/` changes.
+- Leftovers outside the repo, safe to delete: the scratch project `~/Dropbox/prj/ai/tgh-verify/` (the phase 8 Claude run) and `~/tgh-copilot-results/` (the raw Copilot audit logs from phase 9, with the work machine's username and paths; don't commit them).
+
+## Current state
+
+All code is done and verified against real installs: both agents (Claude and Copilot), six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written, with real payload shapes. The quality gate passes (all tests green).
 
 ### Modules
 
@@ -32,89 +39,49 @@ All code is done: both agents (Claude and Copilot) are supported end to end — 
 | `auditing.rs` | `AuditRecord` (+ optional `error`), `for_evaluation` / `for_error`, `Invocation`, `truncate_json_strings`, `append` (create+append, `File::lock`; does not create parent directories). `ts` is the start-of-run clock read. |
 | `validate.rs` | `validate(agent, &Config) -> Validation { summary, warnings }`; warns per field whose first path segment isn't a known top-level key for the agent. |
 
-### Tests, fixtures, docs
+### Tests, fixtures, docs, scripts
 
-- `tests/`: `config.rs`, `claude.rs`, `copilot.rs`, `audit.rs`, `examples.rs`, `smoke.rs` (real binary, `HOME` set to a temp dir). See `tests/README.md` for the layout and the `jq` capture one-liner.
-- `tests/fixtures/claude/{bash,read,write,edit,agent}.json`: documented Claude payload shape (`agent.json` assumes the subagent tool is named `Agent`).
-- `tests/fixtures/copilot/{bash,view,create,edit,glob,task}.json`: documented top-level shape; **the `toolArgs` field names are guesses** (see the README there).
-- `examples/{claude,copilot,mermaid-claude}.toml` (validated and, for mermaid, scenario-tested by `tests/examples.rs`).
-- Docs: `README.md`, `docs/configuration-guide.md`, `docs/claude-tool-inputs.md`, `docs/copilot-tool-inputs.md`, `tests/README.md`, `AGENTS.md`. `docs/review-findings.md` is the historical pre-rework review (it still quotes the old format deliberately).
+- `tests/`: `config.rs`, `claude.rs`, `copilot.rs`, `audit.rs`, `examples.rs` (also the mermaid scenarios and the legacy-python rule in `examples/claude.toml`), `smoke.rs` (real binary, `HOME` set to a temp dir). `tests/README.md` has the layout and the `jq` capture one-liner. `tests/copilot.rs` copies small helpers (`fixture_in`, `run_outcome`) from `tests/claude.rs`.
+- Fixtures (real shapes, placeholder values): `tests/fixtures/claude/{bash,read,write,edit,agent,subagent_handback}.json`, `tests/fixtures/copilot/{bash,view,create,apply_patch,rg,glob,task}.json`, `tests/fixtures/copilot_via_claude/{bash,read,edit}.json`.
+- `examples/{claude,copilot,mermaid-claude}.toml` (validated; mermaid and the `@legacy_python` deny rule are scenario-tested).
+- Docs: `README.md`, `docs/configuration-guide.md`, `docs/claude-tool-inputs.md`, `docs/copilot-tool-inputs.md`, `docs/copilot-verification.md`, `tests/README.md`, `AGENTS.md`. `docs/review-findings.md` is the historical pre-rework review (it still quotes the old format deliberately).
+- `scripts/copilot-verify.sh` (`setup` / `report` / `push [-n]` / `teardown`) drives the work-machine verification; it is a bash script, not covered by tests (it was exercised by hand in a sandbox).
 
-### Things still marked unverified (to settle in phases 8 and 9)
+### Verified facts worth remembering
 
-- Claude: resolved in 8.1 (Claude Code 2.1.289): the subagent tool is `Agent`, there is a `SubagentHandback` pseudo-tool (auto mode only), and `Glob`/`Grep` are absent by default on macOS/Linux/WSL (present on Windows). Still unchecked: `tool_input` for tools not captured (`NotebookEdit`, `Glob`, `Grep`, web, todo and task-list tools; `MultiEdit`, `LS`, `BashOutput` and `KillShell` were dropped from the docs as no longer current).
-- Copilot: resolved in 9.2 from two runs on 2026-10-04 (results in `~/tgh-copilot-results/`, outside the repo): the `toolArgs` fields (`create` has `path` and `file_text`, `apply_patch` a string, `rg` and `glob` use `paths`; the tool set varies by model), repo hooks run in the repo root so a relative `--config` works, allow suppresses a prompt, deny works on `bash`, `view` and `apply_patch`, and a deny from one hook can stop the others. Still untested, deliberately dropped (the author doesn't run both agents on one machine): the `edit` tool, Claude-format decisions from a `.claude` hook, and the user-level `~/.claude/settings.json`.
+- **Claude Code 2.1.289:** the subagent tool is `Agent`; in auto mode a `SubagentHandback` pseudo-tool fires; `Glob` and `Grep` are absent by default on macOS, Linux and WSL (searches arrive as `Bash`); `scratchpad_dir` is a top-level field.
+- **Copilot CLI (2026-10-04, a GPT model and Haiku 4.5):** the tool set varies by model (`create` with `path` and `file_text`, or `apply_patch` with a **string** `toolArgs`; `grep` arrives as `rg`; `glob` and `rg` use `paths`). Repo-level hooks run in the repo root, so a relative `--config` works. `allow` suppresses a prompt, and `deny`, `ask` and config-error `ask` show their reason. A deny from one hook can stop other hooks running. `.claude/settings.json` hooks run too, with Claude-format payloads (Copilot field names). Details: `docs/copilot-tool-inputs.md`, `spec.md`.
+- **Untested and not planned:** Copilot's `edit` tool (never seen), Claude-format decisions from a `.claude` hook, and Copilot reading the user-level `~/.claude/settings.json`. The user doesn't run both agents on one machine and configures Copilot to ignore `.claude/`. `tool_input` for Claude tools other than `Bash`, `Read`, `Write`, `Edit`, `Agent` and `SubagentHandback` comes from community sources, not captures.
 
 ### Dependencies
 
 `anyhow`, `clap`, `serde`, `serde_json`, `toml` 1.x, `regex`, `globset`, `chrono`, `log`, `env_logger`; dev: `pretty_assertions`, `tempfile`. Lints live in `[lints]` in `Cargo.toml`; never add `#![…]` lint attributes to source files.
 
-### Verifying with a real agent without disrupting daily use
-
-Claude verification (phase 8) uses a **scratch project** with the hook registered in that project's `.claude/settings.local.json`, not user-level settings, so a broken build only affects that project.
-
 ---
 
 ## Checklist
 
-### Done
+### Done (phases 0 to 9, all committed)
 
-- [x] **0.1–0.2** Dependencies bumped, `nix` replaced by std `File::lock`; `docs/review-findings.md` written.
-- [x] **1.1–1.2** Renamed to `tool-gate-hook`, lints in `Cargo.toml`; required `--agent`, default config `~/.config/tool-gate-hook/<agent>.toml`, `run` always exits 0 (clap argument errors still exit 2, deliberately).
-- [x] **2.1–2.3** New config model compiled to a `Policy`; evaluation and Claude adapter; error handling (config error → `ask`, bad payload → passthrough).
-- [x] **3.1–3.2** `equals`, `exists`, `glob`; `under` with symlink-safe resolution (the spec's original lexical-first algorithm was unsafe and has been corrected).
-- [x] **4.1** Copilot adapter, fixtures and acceptance tests.
-- [x] **5.1–5.3** Audit record with an injected clock and level filtering; truncation marker and error records; locked append from `main`.
-- [x] **6.1** `validate` summary and unknown-field-path warnings.
-- [x] **7.1** Example configs (the mermaid `curl` rule gained `@shell_chain`/`@parent_dir` safety nets; the `echo` rule is anchored).
-- [x] **7.2** Docs rewrite (verified by extracting and validating the docs' TOML blocks; the old `_regex =` grep check was narrowed because it also matched `not_regex =`).
-
-### Phase 8: Local Claude verification
-
-- [x] **8.1 Real Claude Code run** (needs the user at the keyboard)
-  - `cargo install --path .`
-  - In a scratch project, register the hook in `.claude/settings.local.json` (command `tool-gate-hook run --agent claude`, or an absolute path if `~/.cargo/bin` isn't on the hook's `PATH`), with a config using `level = "all"`, `max_value_len = 0`, and one allow, one deny and one ask rule.
-  - Run prompts that use Bash, Read, Write, Edit, Glob, Grep and a subagent.
-  - **Verify:**
-    - each rule produces the expected behaviour in the UI: auto-run, a blocked call with its reason, and a prompt
-    - passthrough calls prompt normally
-    - a deliberately broken config causes every call to prompt with the config error
-    - the audit log contains every call
-  - Capture representative payloads into `tests/fixtures/claude/` with the `jq` one-liner (scrub private paths and ids), and confirm or correct the `Task` → `Agent` naming and the `docs/claude-tool-inputs.md` fields. Update the fixtures, examples and docs if the shape differs, and remove the corresponding "unverified" notes.
-
-- [x] **8.2 Switch user-level hook (manual, optional)**
-  - The user moves their real config to `~/.config/tool-gate-hook/claude.toml` and registers the hook in `~/.claude/settings.json`.
-  - **Verify:** one normal working session with no surprises.
-
-### Phase 9: Copilot verification (work machine)
-
-The work machine is Apple Silicon (this one is Intel); both have Rust. Transfer by rsync over ssh, initiated **from** the work machine.
-
-- [x] **9.1 Verification kit**
-  - Write `docs/copilot-verification.md`, covering:
-    - rsync commands (pulled from the work machine)
-    - `cargo install --path .`
-    - the user-level `~/.copilot/hooks/tool-gate-hook.json`
-    - a test repo with `.github/hooks/tool-gate-hook.json`, a `.github/hooks/tool-gate-hook.toml`, and a `.claude/settings.json` hook to observe cross-reading
-    - the verification config (`level = "all"`, `max_value_len = 0`, one allow, one deny and one ask rule)
-    - a numbered prompt script exercising `bash`, `view`, `create`, `edit`, `glob`, `task`, plus one prompt per rule
-    - what to rsync back
-  - **Verify:** a dry read-through with the user. All commands work on this machine where possible (the build, `validate` of the verification configs).
-
-- [x] **9.2 Run on the work machine and fold results in** (done from the first run; the remaining gaps are listed above and optional)
-  - The user runs the kit and rsyncs back the audit logs.
-  - Turn the payloads into `tests/fixtures/copilot/`, then fix the `toolArgs` field names in the fixtures, examples and docs.
-  - Record the repo-hook cwd finding, the relative `--config` finding and the `.claude/` cross-reading finding in the docs (README, `docs/copilot-tool-inputs.md`), and adjust the project-level registration instructions if needed.
-  - **Verify:** the quality gate passes with the real fixtures, and the "unverified" markers are removed. A second work-machine run is needed only if code changed in a way the fixtures can't cover.
+- [x] **0** Dependencies bumped, `nix` replaced by std `File::lock`; `docs/review-findings.md` written.
+- [x] **1** Renamed to `tool-gate-hook`, lints in `Cargo.toml`; required `--agent`, default config `~/.config/tool-gate-hook/<agent>.toml`, `run` always exits 0 (clap argument errors still exit 2, deliberately).
+- [x] **2** New config model compiled to a `Policy`; evaluation and Claude adapter; error handling (config error → `ask`, bad payload → passthrough).
+- [x] **3** `equals`, `exists`, `glob`; `under` with symlink-safe resolution (the spec's original lexical-first algorithm was unsafe and has been corrected).
+- [x] **4** Copilot adapter, fixtures and acceptance tests.
+- [x] **5** Audit record with an injected clock and level filtering; truncation marker and error records; locked append from `main`.
+- [x] **6** `validate` summary and unknown-field-path warnings.
+- [x] **7** Example configs and the docs rewrite.
+- [x] **8** Local Claude verification: real run in a scratch project, fixtures and docs corrected; the user-level hook is live with the legacy-python rule (also `examples/claude.toml`).
+- [x] **9** Copilot verification: kit (`docs/copilot-verification.md`, `scripts/copilot-verify.sh`), two work-machine runs, real payloads folded into fixtures, tests, examples and docs.
 
 ### Phase 10: Review and PR
 
 - [ ] **10.1 Full senior-engineer review**
-  - Review the whole codebase against the engineering-standards skill: clarity, minimal comments, pure functions, errors as values, no dead code, latest dependencies.
+  - Review the whole codebase against the engineering-standards skill: clarity, minimal comments, pure functions, errors as values, no dead code, latest dependencies. Include `tests/` and `scripts/copilot-verify.sh`.
   - Fix the findings and update `docs/review-findings.md` with what was addressed.
-  - Known loose ends to settle here: the README's "See LICENSE file" line but there is no `LICENSE` file; the repository directory and remote are still named `claude-code-permissions-hook`; `tests/copilot.rs` copies small helpers from `tests/claude.rs` (consider `tests/common/mod.rs` if it reads better).
+  - Known loose ends to settle here: the README's "See LICENSE file" line but there is no `LICENSE` file; the repository directory and remote are still named `claude-code-permissions-hook`; `tests/copilot.rs` copies small helpers from `tests/claude.rs` (consider `tests/common/mod.rs` if it reads better); the legacy-python rule treats quoted text as a command boundary (a known limit of regex matching; decide whether to document it in the configuration guide).
   - **Verify:** the quality gate passes, and `cargo outdated` is clean.
 
 - [ ] **10.2 PR**
-  - Push the branch and open a PR against `main` summarising the changes, the verification done on both agents, and anything remaining.
+  - Push the branch (already on `origin`) and open a PR against `main` summarising the changes, the verification done on both agents, and anything remaining (the untested items above).
   - **Verify:** the user approves the PR description before it is created.

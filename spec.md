@@ -154,6 +154,7 @@ match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 
 - Path lookup walks objects by key. A missing path = the matcher **fails** (rule doesn't match), except `exists = false`.
 - String values are matched as-is; numbers and booleans are matched against their JSON text form (`120000`, `true`); objects/arrays only support `exists`.
+- A whole field can itself be a string, for example Copilot's `apply_patch` has `toolArgs` as the patch text: address it as `match."toolArgs"` and use `regex` (with `(?m)` for per-line anchors). It has no sub-fields, so `under` and `toolArgs.path` don't apply.
 
 ### Matchers (per field; all given matchers must pass)
 
@@ -263,7 +264,7 @@ Test-first, per step: each step writes its acceptance tests before implementing 
 - **Acceptance tests** (primary) run in-process: they call `tool_gate_hook::run` with a fixture payload, a config written to a temp dir and an injected `Context` (temp home; fixed clock), and assert on the whole `Outcome` (stdout JSON, warnings, audit record) with `pretty_assertions`.
 - **Smoke tests** (a handful) spawn the real binary for CLI wiring, exit codes, `validate` and the real audit file write.
 - **Coverage goal**: enough to be confident it works, not exhaustive — main behaviours plus security-relevant edge cases.
-- Fixtures: `tests/fixtures/claude/…`, `tests/fixtures/copilot/…`. Initial fixtures come from documented payload examples; later, real captured payloads (via `level = "all"`, `max_value_len = 0`) are copied in. Document a `jq` one-liner for extracting a payload from an audit record into a fixture.
+- Fixtures: `tests/fixtures/claude/…`, `tests/fixtures/copilot/…` and `tests/fixtures/copilot_via_claude/…` (what Copilot sends to a `.claude/settings.json` hook). The shapes come from real captures (via `level = "all"`, `max_value_len = 0`) with placeholder values, so tests keep stable expectations. `tests/README.md` documents a `jq` one-liner for extracting a payload from an audit record into a fixture.
 - The mermaid example config (see Documentation) doubles as a realistic acceptance scenario: a narrow workflow of allowed commands and paths, with shell-chain and `..` safety nets. It is illustrative only, so its rules don't need to match the user's current mermaid workflow.
 - Must-cover cases: each decision tier and precedence (deny beats allow regardless of order), all matches recorded in order, `not_regex` exclusion → passthrough, `@pattern` lists, each matcher, `under` with `..`, symlinks, non-existent files, `{cwd}` and `~`; missing field; config error → ask (both agents' output formats); payload mismatch → passthrough + error record; truncation and `max_value_len = 0`; `validate` warnings.
 - **Unit tests** only for small, fiddly pure functions: path normalisation/containment, field-path lookup, pattern resolution, value truncation.
@@ -271,18 +272,11 @@ Test-first, per step: each step writes its acceptance tests before implementing 
 
 ## Copilot verification (work machine)
 
-The work machine is Apple Silicon (this machine is Intel, so no cross-compiling); both have Rust. Transfer by rsync over ssh, initiated **from** the work machine (pull the source, push results back).
+Done on 2026-10-04 in two short sessions (a GPT model and Haiku 4.5); the results are folded into the fixtures, examples and docs (see "Copilot CLI" above for the findings). The method, kept for repeating it against a new Copilot version:
 
-Do as much as possible before this from documentation fixtures. Then, in one batched session:
-
-1. rsync the source; `cargo install --path .`
-2. Register a user-level `preToolUse` hook and one repo-level hook (`.github/hooks/`).
-3. Config with `level = "all"`, `max_value_len = 0`, and one allow, one deny and one ask rule.
-4. Run a scripted list of prompts that exercise `bash`, `view`, `create`, `edit`, `glob`, `task`, plus one prompt per rule.
-5. Also add a `.claude/settings.json` hook in the test repo to observe cross-reading behaviour.
-6. rsync the audit log back; turn payloads into fixtures; confirm `toolArgs` field names, repo-hook cwd, and decision output handling; fix and re-test locally.
-
-Phase 9 deliverable includes this checklist as a script or doc (`docs/copilot-verification.md`) so the session is mechanical.
+- The work machine is Apple Silicon (the home machine is Intel, so no cross-compiling); both have Rust. Sync is **one-way in each direction, to separate directories**: the source is pulled from home with rsync (excluding `target/`, `.git/` and `.claude/`, with `--delete`), and results are pushed back to a timestamped directory outside Dropbox, so nothing conflicts and work-machine logs don't reach the cloud.
+- `scripts/copilot-verify.sh setup` builds a scratch repo with a user-level hook (the only one with decisions: `user.toml`), a repo-level audit-only hook with a relative `--config` plus a cwd probe, and an audit-only `.claude/settings.json` hook. `report` summarises the audit files, `push` sends results home, `teardown` removes the user-level hook.
+- `docs/copilot-verification.md` is the numbered prompt script (tool payloads, one prompt per rule, a config error, and a short second run for gaps). Test strings are neutral (`tgh-blocked`, not "secret"), because models refuse to touch files that sound sensitive before the hook ever runs. A check that proves an `allow` needs a command that prompts without the rule (`touch`, not `echo`).
 
 ## Documentation
 
@@ -294,7 +288,7 @@ The README is the entry point and stays short. Detailed reference material lives
 | `docs/configuration-guide.md` | **Rewrite from scratch** as the full config reference: `[audit]`, `[patterns]`, `[[rule]]` fields, every matcher with examples, field paths, `under` semantics, decision tiers, and worked examples for both agents (including the mermaid example). Drop the per-tool `*_regex` field sections. |
 | `docs/tool-input-schemas.md` | **Split and rename** into `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md`. Each covers the full hook payload (top-level fields plus per-tool `tool_input` / `toolArgs`). Refresh the Claude doc from the current hooks docs and real captured payloads (e.g. `Task` → `Agent`, new top-level fields such as `permission_mode`, `agent_type`, `tool_use_id`). Write the Copilot doc from GitHub's docs and then correct it from the phase 9 captures. Keep the source-attribution table approach. State that the audit log (`level = "all"`, `max_value_len = 0`) is the authoritative source and the docs are a convenience snapshot, dated. |
 | `docs/review-findings.md` | New (phase 0). |
-| `docs/copilot-verification.md` | New (phase 9): the work-machine checklist. |
+| `docs/copilot-verification.md` | New (phase 9): the work-machine checklist, driven by `scripts/copilot-verify.sh`. |
 | `tests/README.md` | Rewrite for the new fixture layout and the `jq` capture workflow. Delete the old top-level `tests/*.json` fixtures and `tests/test_config.toml`. |
 | `example.toml`, `sample-mermaid-hook.toml` | Replace with `examples/claude.toml`, `examples/copilot.toml` and `examples/mermaid-claude.toml`. Delete the old files. The mermaid file is an **illustrative** example of a tightly scoped workflow config (allow-list of commands and paths with `@shell_chain` / `@parent_dir` safety nets), loosely based on the old sample (with the safety nets applied to every command rule); it does not need to track the user's real workflow. |
 | `update-thoughts.md` | Delete once the spec is accepted (superseded by this spec). |
