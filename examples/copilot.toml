@@ -2,10 +2,10 @@
 # Copy to ~/.config/tool-gate-hook/copilot.toml and adjust.
 # Validate with: tool-gate-hook validate --agent copilot --config examples/copilot.toml
 #
-# Copilot tool names are lowercase (bash, view, create, edit, glob, ...) and the
-# tool's arguments live under `toolArgs`.
-# UNVERIFIED: the field names inside `toolArgs` (command, path) are best guesses
-# until checked against real captured payloads (plan step 9.2).
+# Copilot tool names are lowercase (bash, view, glob, rg, task, apply_patch, ...) and the
+# tool's arguments live under `toolArgs`. Seen with a real Copilot CLI: bash has `command`,
+# view has `path`, glob and rg have `paths` (a directory string), and file changes arrive
+# as `apply_patch` with `toolArgs` being the patch text itself (a string, so no field path).
 
 [audit]
 file = "/tmp/tool-gate-hook-copilot.jsonl"
@@ -33,9 +33,15 @@ match."toolArgs.command" = { regex = '^git (status|diff|log|show)\b', not_regex 
 
 [[rule]]
 decision = "allow"
-tool = "view|glob"
-description = "reads inside the project"
+tool = "view"
+description = "views inside the project"
 match."toolArgs.path" = { under = ["{cwd}"] }
+
+[[rule]]
+decision = "allow"
+tool = "glob|rg"
+description = "searches inside the project"
+match."toolArgs.paths" = { under = ["{cwd}"] }
 
 [[rule]]
 decision = "ask"
@@ -51,6 +57,13 @@ match."toolArgs.command" = { regex = '^rm .*-rf' }
 
 [[rule]]
 decision = "deny"
-tool = "view|edit|create"
+tool = "view"
 reason = "Secrets files are off limits"
 match."toolArgs.path" = { regex = '\.(env|secret)$' }
+
+# A patch is one string: match the "*** Add/Update/Delete File:" lines in it
+[[rule]]
+decision = "deny"
+tool = "apply_patch"
+reason = "Secrets files are off limits"
+match."toolArgs" = { regex = '(?m)^\*\*\* (Add|Update|Delete) File: .*\.(env|secret)$' }

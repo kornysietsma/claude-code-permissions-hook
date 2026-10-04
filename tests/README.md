@@ -28,7 +28,7 @@ Coverage goal: enough to be confident it works, not exhaustive. Main behaviours 
 
 ## Fixtures
 
-`fixtures/claude/` holds the documented current Claude Code payload shape (`bash`, `read`, `write`, `edit`, `agent`). `fixtures/copilot/` holds Copilot payloads (`bash`, `view`, `create`, `edit`, `glob`, `task`); its README notes that the `toolArgs` field names are unverified.
+`fixtures/claude/` holds Claude Code payloads (`bash`, `read`, `write`, `edit`, `agent`, `subagent_handback`). `fixtures/copilot/` holds Copilot payloads (`bash`, `view`, `glob`, `rg`, `task`, `apply_patch`), and `fixtures/copilot_via_claude/` what Copilot sends to a `.claude/settings.json` hook (`bash`, `read`, `edit`). All have shapes captured from real agents, with placeholder values (paths, ids).
 
 ### Capturing a real payload
 

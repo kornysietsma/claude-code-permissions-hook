@@ -102,7 +102,7 @@ For a project with its own needs, register a second hook with its own config fil
 - **Claude**: in `.claude/settings.json`, use the command
   `tool-gate-hook run --agent claude --config "$CLAUDE_PROJECT_DIR/.claude/tool-gate-hook.toml"`.
 - **Copilot**: in `.github/hooks/tool-gate-hook.json`, use
-  `tool-gate-hook run --agent copilot --config .github/hooks/tool-gate-hook.toml`. If repo hooks don't run from the repo root, add an explicit `cwd` to the hook entry. (A relative `--config` resolves against the process's working directory. This is unverified; see below.)
+  `tool-gate-hook run --agent copilot --config .github/hooks/tool-gate-hook.toml`. Repo-level hooks run in the repository root, so the relative `--config` path works (a relative path resolves against the process's working directory).
 
 Each config names its own audit file. Pointing both at the same file is safe (lines are written under a file lock), and the `config` field in each record says which config wrote it.
 
@@ -126,7 +126,7 @@ Every rule is evaluated; the final decision is **deny > ask > allow** regardless
 `tool-gate-hook run` always exits 0 (Copilot treats any non-zero exit as a deny).
 
 - **Config problem** (missing file, bad TOML, invalid regex): every call gets an `ask` with the error as the reason, plus a message on stderr. Loud, never locked out.
-- **Payload for the wrong agent or malformed**: passthrough with a stderr warning, and an error record in the audit log. This is what happens if Copilot runs a hook registered in `.claude/settings.json`; avoid relying on `.claude/` hooks under Copilot.
+- **Payload for the wrong agent or malformed**: passthrough with a stderr warning, and an error record in the audit log. This is what happens if a `--agent copilot` hook is registered in `.claude/settings.json`, which Copilot also reads. Register Copilot hooks under `.github/hooks/` or `~/.copilot/hooks/` instead; see [Copilot payloads](./docs/copilot-tool-inputs.md) for what Copilot sends to a `.claude` hook.
 - **Audit write failure**: stderr warning only.
 
 ## Troubleshooting
@@ -139,7 +139,13 @@ Every rule is evaluated; the final decision is **deny > ask > allow** regardless
 
 ## Status
 
-Claude Code support has been run against fixtures built from the documented payloads. Copilot CLI support is built from GitHub's documentation, and the **`toolArgs` field names are unverified** until checked on a real Copilot CLI; so are the working directory of repo-level hooks and what happens when a `.claude/settings.json` hook fires under Copilot.
+Both agents have been checked on a real install (2026-10-04): payloads captured, and `allow`, `deny`, `ask` and config-error behaviour seen in the UI. Things to know about Copilot CLI:
+
+- File changes arrive as `apply_patch` with the patch text as a plain string in `toolArgs`, so gate them with a regex on `toolArgs`, not a path. `grep` arrives as `rg`, and `glob` and `rg` carry their directory in `toolArgs.paths`.
+- Copilot also runs hooks from `.claude/settings.json`, sending Claude-format payloads with Claude's tool names (`Read`, `Edit`, ...) but Copilot's field names (`tool_input.path`).
+- Not yet tested: whether `allow` suppresses a prompt Copilot would otherwise show, deny rules on `view`, whether Copilot honours Claude-format decisions from a `.claude` hook, and whether it reads the user-level `~/.claude/settings.json`.
+
+The details are in [Copilot payloads](./docs/copilot-tool-inputs.md).
 
 ## Documentation
 

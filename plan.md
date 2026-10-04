@@ -15,9 +15,9 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell notes: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex). zsh needs `--include='*.md'` quoted. `python3` is blocked by a hook (use `uv run`, or perl/sed).
 
-## Current state (after step 9.1)
+## Current state (after step 9.2)
 
-All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. What remains is **verification against the real agents** (9.2: run `docs/copilot-verification.md` on the work machine; Claude is verified and the user-level hook is live with the legacy-python rule) and the final review and PR (phase 10). Verification can change fixtures, examples and docs, and code only if a payload turns out different from the documented shape.
+All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. Both agents have been verified on real installs (Claude in phase 8, with the user-level hook live and carrying the legacy-python rule; Copilot in phase 9, with real payload shapes in the fixtures, examples and docs). What remains is the final review and PR (phase 10), plus a few optional Copilot checks listed under "Things still marked unverified".
 
 ### Modules
 
@@ -43,7 +43,7 @@ All code is done: both agents (Claude and Copilot) are supported end to end — 
 ### Things still marked unverified (to settle in phases 8 and 9)
 
 - Claude: resolved in 8.1 (Claude Code 2.1.289): the subagent tool is `Agent`, there is a `SubagentHandback` pseudo-tool (auto mode only), and `Glob`/`Grep` are absent by default on macOS/Linux/WSL (present on Windows). Still unchecked: `tool_input` for tools not captured (`NotebookEdit`, `Glob`, `Grep`, web, todo and task-list tools; `MultiEdit`, `LS`, `BashOutput` and `KillShell` were dropped from the docs as no longer current).
-- Copilot: every `toolArgs.*` field name (`docs/copilot-tool-inputs.md`, `tests/fixtures/copilot/`, `examples/copilot.toml`, a note in the README "Status" section); the working directory of repo-level hooks; what happens when a `.claude/settings.json` hook fires under Copilot; whether a relative `--config` works for project-level Copilot hooks.
+- Copilot: resolved in 9.2 from the run of 2026-10-04 (results in `~/tgh-copilot-results/20261004-183546/`, outside the repo): the `toolArgs` fields (`apply_patch` has a string, `rg` and `glob` use `paths`), repo hooks run in the repo root so a relative `--config` works, and `.claude/settings.json` hooks run with Claude-format payloads. Still untested (listed in `spec.md`): an `allow` suppressing a prompt Copilot would otherwise show (`echo` runs unprompted anyway), a deny on `view` (the model refused before calling the tool), `create`/`edit` with other models, Claude-format decisions from a `.claude` hook, and the user-level `~/.claude/settings.json`.
 
 ### Dependencies
 
@@ -101,7 +101,7 @@ The work machine is Apple Silicon (this one is Intel); both have Rust. Transfer 
     - what to rsync back
   - **Verify:** a dry read-through with the user. All commands work on this machine where possible (the build, `validate` of the verification configs).
 
-- [ ] **9.2 Run on the work machine and fold results in**
+- [x] **9.2 Run on the work machine and fold results in** (done from the first run; the remaining gaps are listed above and optional)
   - The user runs the kit and rsyncs back the audit logs.
   - Turn the payloads into `tests/fixtures/copilot/`, then fix the `toolArgs` field names in the fixtures, examples and docs.
   - Record the repo-hook cwd finding, the relative `--config` finding and the `.claude/` cross-reading finding in the docs (README, `docs/copilot-tool-inputs.md`), and adjust the project-level registration instructions if needed.

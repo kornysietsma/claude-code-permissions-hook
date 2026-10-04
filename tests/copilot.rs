@@ -62,8 +62,8 @@ fn deny_and_ask_always_carry_a_reason() {
         &fixture("view"),
     );
     let ask = run_copilot(
-        "[[rule]]\ndecision = \"ask\"\ntool = \"edit\"",
-        &fixture("edit"),
+        "[[rule]]\ndecision = \"ask\"\ntool = \"apply_patch\"",
+        &fixture("apply_patch"),
     );
 
     assert_eq!(
@@ -84,7 +84,7 @@ fn deny_and_ask_always_carry_a_reason() {
 
 #[test]
 fn every_fixture_is_parsed_and_matched_by_its_lowercase_tool_name() {
-    for tool in ["bash", "view", "create", "edit", "glob", "task"] {
+    for tool in ["bash", "view", "apply_patch", "rg", "glob", "task"] {
         let config = format!("[[rule]]\ndecision = \"allow\"\ntool = \"{tool}\"");
         assert_eq!(
             decision(&run_copilot(&config, &fixture(tool))),
@@ -117,7 +117,75 @@ match."toolArgs.path" = { under = ["{cwd}/src"] }
         decision(&run_copilot(config, &fixture("view"))),
         Some("deny")
     );
-    assert_eq!(run_copilot(config, &fixture("create")), None);
+    assert_eq!(run_copilot(config, &fixture("apply_patch")), None);
+}
+
+#[test]
+fn rules_can_match_a_patch_given_as_a_string() {
+    let config = r#"
+[[rule]]
+decision = "deny"
+tool = "apply_patch"
+match."toolArgs" = { regex = '(?m)^\*\*\* (Add|Update|Delete) File: .*\.(env|secret)$' }
+"#;
+    let mut secret: Value = serde_json::from_str(&fixture("apply_patch")).unwrap();
+    secret["toolArgs"] = json!("*** Begin Patch\n*** Add File: .env\n+KEY=1\n*** End Patch\n");
+
+    assert_eq!(
+        decision(&run_copilot(config, &secret.to_string())),
+        Some("deny")
+    );
+    assert_eq!(run_copilot(config, &fixture("apply_patch")), None);
+}
+
+#[test]
+fn search_tools_carry_their_directory_in_paths() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+tool = "glob|rg"
+match."toolArgs.paths" = { under = ["{cwd}"] }
+"#;
+
+    for tool in ["glob", "rg"] {
+        assert_eq!(
+            decision(&run_copilot(config, &fixture(tool))),
+            Some("allow"),
+            "{tool}"
+        );
+    }
+}
+
+#[test]
+fn claude_agent_accepts_what_copilot_sends_to_a_claude_hook() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+tool = "Bash"
+match."tool_input.command" = { regex = '^ls ' }
+
+[[rule]]
+decision = "ask"
+tool = "Read"
+match."tool_input.path" = { under = ["{cwd}"] }
+
+[[rule]]
+decision = "deny"
+tool = "Edit"
+match."tool_input" = { regex = '\*\*\* Update File: src/' }
+"#;
+    let run_via_claude = |name: &str| {
+        let stdin = fixture_in("copilot_via_claude", name);
+        let output = run_outcome(Agent::Claude, config, &stdin).output.unwrap();
+        output["hookSpecificOutput"]["permissionDecision"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    assert_eq!(run_via_claude("bash"), "allow");
+    assert_eq!(run_via_claude("read"), "ask");
+    assert_eq!(run_via_claude("edit"), "deny");
 }
 
 #[test]

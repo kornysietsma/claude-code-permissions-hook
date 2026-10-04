@@ -81,7 +81,7 @@ Verified in phase 8 (Claude Code 2.1.289, and the official tools reference): the
 
 ### Copilot CLI (native camelCase `preToolUse` format)
 
-Input: `sessionId`, `timestamp` (Unix ms), `cwd`, `toolName` (`bash`, `view`, `create`, `edit`, `glob`, `grep`, `rg`, `task`, `web_fetch`, …), `toolArgs` (parsed object).
+Input: `sessionId`, `timestamp` (Unix ms), `cwd`, `toolName` (seen: `bash`, `view`, `apply_patch`, `rg`, `glob`, `task`; documented: also `create`, `edit`, `grep`, `web_fetch`, …), `toolArgs` (an object for most tools; a **string** for `apply_patch`, the patch text, which rules match as a whole with `match."toolArgs"`).
 
 Adapter extracts: tool name = `toolName`, cwd = `cwd`. Payload is a mismatch if `toolName` or `cwd` is missing or not a string (e.g. Copilot sending the Claude-compatible snake_case payload because it picked up a `.claude/settings.json` hook).
 
@@ -97,9 +97,11 @@ Copilot-specific behaviour the design relies on:
 - **Any non-zero exit (other than timeout) is treated as deny** for `preToolUse` → `run` must always exit 0.
 - Timeouts fail open.
 - `permissionDecisionReason` is required on deny → we always send one.
-- Copilot reads hooks from `.claude/settings.json` too. We avoid this where possible; docs tell Copilot users not to rely on `.claude/` hooks, and a mismatched payload passes through (see Error handling).
+- Copilot reads hooks from `.claude/settings.json` too, and runs them with a Claude-format payload (Claude tool names, Copilot field names). A `--agent claude` hook registered there works; a `--agent copilot` hook gets a mismatched payload, which passes through (see Error handling). Docs tell Copilot users to register under `.github/hooks/` or `~/.copilot/hooks/`.
 
-Unverified, to confirm on the work machine: exact `toolArgs` field names per tool, working directory for repo-level hooks, behaviour when a `.claude/settings.json` hook fires under Copilot.
+Verified on 2026-10-04 (one session, one model): the `toolArgs` fields per tool (`docs/copilot-tool-inputs.md`); repo-level hooks run in the repository root, so a relative `--config` works; every registered hook runs for every call; `deny`, `ask` and config-error `ask` show their reason in the UI.
+
+Still untested: whether an `allow` suppresses a prompt Copilot would otherwise show, a deny rule on `view`, `create`/`edit` with other models, whether Copilot honours Claude-format decisions from a `.claude` hook, and whether it reads the user-level `~/.claude/settings.json`.
 
 ## Configuration
 

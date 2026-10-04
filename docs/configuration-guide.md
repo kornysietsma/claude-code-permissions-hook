@@ -220,7 +220,7 @@ description = "cargo workflow"
 match."toolArgs.command" = { regex = '^cargo (build|test|check)\b', not_regex = "@shell_chain" }
 ```
 
-Copilot tool names are lowercase and arguments live under `toolArgs`. (The `toolArgs` field names are unverified; see [Copilot payloads](./copilot-tool-inputs.md).)
+Copilot tool names are lowercase and arguments live under `toolArgs`. File changes are the exception: `apply_patch` has a plain string for `toolArgs`, so match it with `match."toolArgs" = { regex = '...' }`. See [Copilot payloads](./copilot-tool-inputs.md) for each tool's fields.
 
 ### A whole workflow
 
