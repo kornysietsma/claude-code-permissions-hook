@@ -37,7 +37,7 @@ cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config e
 - **src/auditing.rs**: `AuditRecord` (evaluation and error records), value truncation and `append` (locked JSONL write).
 - **src/validate.rs**: the `validate` summary and its warnings.
 
-Docs: `README.md` (entry point), `docs/configuration-guide.md` (config reference), `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md` (payloads), `examples/` (example configs), `docs/review-findings.md` (the pre-rework review).
+Docs: `README.md` (entry point), `docs/configuration-guide.md` (config reference), `docs/claude-tool-inputs.md` and `docs/copilot-tool-inputs.md` (payloads), `examples/` (example configs), `docs/review-findings.md` (the pre-rework review), `docs/copilot-verification.md` (the work-machine checklist, driven by `scripts/copilot-verify.sh`).
 
 ## Important Details
 

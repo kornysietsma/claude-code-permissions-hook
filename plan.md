@@ -15,9 +15,9 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell notes: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex). zsh needs `--include='*.md'` quoted. `python3` is blocked by a hook (use `uv run`, or perl/sed).
 
-## Current state (after step 8.2)
+## Current state (after step 9.1)
 
-All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. What remains is **verification against the real agents** (phase 9; Claude is verified, and the user-level hook is live with the legacy-python rule) and the final review and PR (phase 10). Verification can change fixtures, examples and docs, and code only if a payload turns out different from the documented shape.
+All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. What remains is **verification against the real agents** (9.2: run `docs/copilot-verification.md` on the work machine; Claude is verified and the user-level hook is live with the legacy-python rule) and the final review and PR (phase 10). Verification can change fixtures, examples and docs, and code only if a payload turns out different from the documented shape.
 
 ### Modules
 
@@ -90,7 +90,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
 
 The work machine is Apple Silicon (this one is Intel); both have Rust. Transfer by rsync over ssh, initiated **from** the work machine.
 
-- [ ] **9.1 Verification kit**
+- [x] **9.1 Verification kit**
   - Write `docs/copilot-verification.md`, covering:
     - rsync commands (pulled from the work machine)
     - `cargo install --path .`
