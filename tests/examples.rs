@@ -98,3 +98,62 @@ fn mermaid_unlisted_tools_fall_through_to_the_user() {
     assert_eq!(bash("ls /tmp/mermaid"), None);
     assert_eq!(file("Edit", "/tmp/mermaid/a.mmd"), None);
 }
+
+fn claude_example(command: &str) -> Option<Value> {
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "cwd": "/Users/someone/prj/demo",
+        "tool_name": "Bash",
+        "tool_input": { "command": command },
+    });
+    let config = examples_dir().join("claude.toml");
+    let context = Context::new(PathBuf::from("/nonexistent-home"));
+    run(Agent::Claude, &config, &payload.to_string(), &context).output
+}
+
+fn denied_legacy_python(command: &str) -> bool {
+    claude_example(command).is_some_and(|o| {
+        o["hookSpecificOutput"]["permissionDecision"] == "deny"
+            && o["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .is_some_and(|r| r.contains("uv run"))
+    })
+}
+
+#[test]
+fn legacy_python_commands_are_denied_wherever_a_command_starts() {
+    for command in [
+        "python script.py",
+        "python3.12 -m venv .venv",
+        "/usr/bin/python3 x.py",
+        ".venv/bin/python x.py",
+        "pip install requests",
+        "pipenv install",
+        "PYTHONPATH=. python x.py",
+        "cd src && python x.py",
+        "ls; pip3 install x",
+        "echo hi | python",
+        "(python x.py)",
+        "echo $(python -V)",
+        "echo `python -V`",
+        "ls\npython x.py",
+    ] {
+        assert!(denied_legacy_python(command), "{command}");
+    }
+}
+
+#[test]
+fn uv_and_unrelated_commands_are_not_denied_as_legacy_python() {
+    for command in [
+        "uv run script.py",
+        "uv run python -c 'print(1)'",
+        "uv pip install requests",
+        "uvx ruff check",
+        "echo python is nice",
+        "git log --grep=python",
+        "cat python.txt",
+        "ls pythonista",
+    ] {
+        assert!(!denied_legacy_python(command), "{command}");
+    }
+}

@@ -13,6 +13,10 @@ max_value_len = 1024   # truncate long strings in the log; 0 = never truncate
 shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
 # Any ".." path segment; stops an allowed prefix being escaped by navigating upwards
 parent_dir = '\.\.'
+# python, pip, pipenv, virtualenv or pyenv as the command itself: at the start, after a
+# separator (; | & newline ( ) ` $( ), and after any VAR=value prefixes, with an optional path.
+# `uv run python` doesn't match because python isn't in command position.
+legacy_python = '(^|[;&|\n(`)])\s*([A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(\S*/)?(python(\d+(\.\d+)?)?|pip\d*|pipenv|virtualenv|pyenv)([\s;&|)`]|$)'
 
 # Allow: read-only inspection and the usual Rust workflow, without chaining
 [[rule]]
@@ -47,6 +51,20 @@ decision = "deny"
 tool = "Bash"
 reason = "Recursive force-delete is not allowed"
 match."tool_input.command" = { regex = '^rm .*-rf' }
+
+[[rule]]
+decision = "deny"
+tool = "Bash"
+description = "legacy Python tooling"
+reason = """
+Blocked legacy Python tooling. This environment uses uv exclusively. Use instead:
+  uv run <script.py>        (not python/python3 <script.py>)
+  uv run python ...         (if you need the interpreter directly)
+  uv add <pkg>              (not pip install)
+  uv pip install <pkg>      (if you really need pip semantics)
+  uv venv                   (not python -m venv / virtualenv)
+For standalone scripts, use a PEP 723 `uv run --script` shebang."""
+match."tool_input.command" = { regex = "@legacy_python" }
 
 [[rule]]
 decision = "deny"
