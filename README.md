@@ -141,9 +141,10 @@ Every rule is evaluated; the final decision is **deny > ask > allow** regardless
 
 Both agents have been checked on a real install (2026-10-04): payloads captured, and `allow`, `deny`, `ask` and config-error behaviour seen in the UI. Things to know about Copilot CLI:
 
-- File changes arrive as `apply_patch` with the patch text as a plain string in `toolArgs`, so gate them with a regex on `toolArgs`, not a path. `grep` arrives as `rg`, and `glob` and `rg` carry their directory in `toolArgs.paths`.
-- Copilot also runs hooks from `.claude/settings.json`, sending Claude-format payloads with Claude's tool names (`Read`, `Edit`, ...) but Copilot's field names (`tool_input.path`).
-- Not yet tested: whether `allow` suppresses a prompt Copilot would otherwise show, deny rules on `view`, whether Copilot honours Claude-format decisions from a `.claude` hook, and whether it reads the user-level `~/.claude/settings.json`.
+- Copilot picks its tools per model. Haiku 4.5 created files with `create` (`toolArgs.path`, `file_text`), while a GPT model used `apply_patch`, whose `toolArgs` is the patch text as a plain string: gate it with a regex on `toolArgs`, not a path. Write rules for both. `grep` arrives as `rg`, and `glob` and `rg` carry their directory in `toolArgs.paths`.
+- Copilot also runs hooks from `.claude/settings.json`, sending Claude-format payloads with Claude's tool names (`Read`, `Edit`, ...) but Copilot's field names (`tool_input.path`). If you use Copilot, configure it to ignore `.claude/` files.
+- A deny from one hook can stop other hooks running for that call, so a repo-level audit log may miss calls that a user-level hook denied.
+- Not tested: `edit` (never seen), whether Copilot honours Claude-format decisions from a `.claude` hook, and whether it reads the user-level `~/.claude/settings.json`.
 
 The details are in [Copilot payloads](./docs/copilot-tool-inputs.md).
 

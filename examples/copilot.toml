@@ -2,10 +2,11 @@
 # Copy to ~/.config/tool-gate-hook/copilot.toml and adjust.
 # Validate with: tool-gate-hook validate --agent copilot --config examples/copilot.toml
 #
-# Copilot tool names are lowercase (bash, view, glob, rg, task, apply_patch, ...) and the
-# tool's arguments live under `toolArgs`. Seen with a real Copilot CLI: bash has `command`,
-# view has `path`, glob and rg have `paths` (a directory string), and file changes arrive
-# as `apply_patch` with `toolArgs` being the patch text itself (a string, so no field path).
+# Copilot tool names are lowercase (bash, view, create, glob, rg, task, apply_patch, ...) and
+# the tool's arguments live under `toolArgs`. Seen with a real Copilot CLI: bash has
+# `command`, view and create have `path`, glob and rg have `paths` (a directory string).
+# File changes depend on the model: `create` (path, file_text) or `apply_patch`, whose
+# `toolArgs` is the patch text itself (a string, so no field path); cover both.
 
 [audit]
 file = "/tmp/tool-gate-hook-copilot.jsonl"
@@ -57,7 +58,7 @@ match."toolArgs.command" = { regex = '^rm .*-rf' }
 
 [[rule]]
 decision = "deny"
-tool = "view"
+tool = "view|create"
 reason = "Secrets files are off limits"
 match."toolArgs.path" = { regex = '\.(env|secret)$' }
 

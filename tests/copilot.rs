@@ -84,7 +84,15 @@ fn deny_and_ask_always_carry_a_reason() {
 
 #[test]
 fn every_fixture_is_parsed_and_matched_by_its_lowercase_tool_name() {
-    for tool in ["bash", "view", "apply_patch", "rg", "glob", "task"] {
+    for tool in [
+        "bash",
+        "view",
+        "create",
+        "apply_patch",
+        "rg",
+        "glob",
+        "task",
+    ] {
         let config = format!("[[rule]]\ndecision = \"allow\"\ntool = \"{tool}\"");
         assert_eq!(
             decision(&run_copilot(&config, &fixture(tool))),
@@ -118,6 +126,22 @@ match."toolArgs.path" = { under = ["{cwd}/src"] }
         Some("deny")
     );
     assert_eq!(run_copilot(config, &fixture("apply_patch")), None);
+}
+
+#[test]
+fn view_and_create_both_carry_their_file_in_path() {
+    let config = r#"
+[[rule]]
+decision = "deny"
+tool = "view|create"
+match."toolArgs.path" = { regex = 'notes2\.txt$' }
+"#;
+
+    assert_eq!(
+        decision(&run_copilot(config, &fixture("create"))),
+        Some("deny")
+    );
+    assert_eq!(run_copilot(config, &fixture("view")), None);
 }
 
 #[test]
