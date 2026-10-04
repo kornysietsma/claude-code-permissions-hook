@@ -272,6 +272,20 @@ match."tool_input.subagent_type" = { regex = '^Explore$' }
 }
 
 #[test]
+fn rules_can_target_the_subagent_handback_event() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+tool = "SubagentHandback"
+description = "subagent results"
+match."agent_type" = { equals = "general-purpose" }
+"#;
+
+    let output = run_claude(config, &fixture("subagent_handback"));
+    assert_eq!(decision(&output), Some("allow"));
+}
+
+#[test]
 fn config_error_asks_with_the_error_as_reason() {
     let outcome = run_claude_outcome(
         r#"

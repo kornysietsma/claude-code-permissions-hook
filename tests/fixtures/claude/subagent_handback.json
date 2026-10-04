@@ -9,9 +9,11 @@
     "level": "high"
   },
   "hook_event_name": "PreToolUse",
-  "tool_name": "Read",
+  "agent_id": "a6128ceedd80671c5",
+  "agent_type": "general-purpose",
+  "tool_name": "SubagentHandback",
   "tool_input": {
-    "file_path": "/Users/someone/prj/demo/src/main.rs"
+    "message": "Done: the file now ends with the new line."
   },
-  "tool_use_id": "toolu_01TESTread"
+  "tool_use_id": "toolu_01TESThandback"
 }

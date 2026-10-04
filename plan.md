@@ -15,9 +15,9 @@ Implements `spec.md`. Work happens on branch `rework-for-copilot` (local only; p
 - **Coverage goal: enough to be confident it works, not exhaustive.** Test main behaviours and security-relevant edge cases; skip unlikely runtime edge cases, especially where a test adds complexity. One representative case per behaviour is enough.
 - Shell notes: macOS `sed` needs `-E` for alternation (`\|` doesn't work in basic regex). zsh needs `--include='*.md'` quoted. `python3` is blocked by a hook (use `uv run`, or perl/sed).
 
-## Current state (after step 7.2)
+## Current state (after step 8.1)
 
-All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. What remains is **verification against the real agents** (phases 8 and 9) and the final review and PR (phase 10). Verification can change fixtures, examples and docs, and code only if a payload turns out different from the documented shape.
+All code is done: both agents (Claude and Copilot) are supported end to end — config loading, six matchers (`regex`, `not_regex`, `equals`, `glob`, `under`, `exists`), tiered decisions, error handling, auditing, `validate`. Examples and docs are written. What remains is **verification against the real agents** (8.2 and phase 9; Claude is verified) and the final review and PR (phase 10). Verification can change fixtures, examples and docs, and code only if a payload turns out different from the documented shape.
 
 ### Modules
 
@@ -42,7 +42,7 @@ All code is done: both agents (Claude and Copilot) are supported end to end — 
 
 ### Things still marked unverified (to settle in phases 8 and 9)
 
-- Claude: whether the subagent tool is `Task` or `Agent` (`docs/claude-tool-inputs.md`, `tests/fixtures/claude/agent.json`); the per-tool `tool_input` fields in that doc.
+- Claude: resolved in 8.1 (Claude Code 2.1.289): the subagent tool is `Agent`, there is a `SubagentHandback` pseudo-tool (auto mode only), and `Glob`/`Grep` are absent by default on macOS/Linux/WSL (present on Windows). Still unchecked: `tool_input` for tools not captured (`NotebookEdit`, `Glob`, `Grep`, web, todo and task-list tools; `MultiEdit`, `LS`, `BashOutput` and `KillShell` were dropped from the docs as no longer current).
 - Copilot: every `toolArgs.*` field name (`docs/copilot-tool-inputs.md`, `tests/fixtures/copilot/`, `examples/copilot.toml`, a note in the README "Status" section); the working directory of repo-level hooks; what happens when a `.claude/settings.json` hook fires under Copilot; whether a relative `--config` works for project-level Copilot hooks.
 
 ### Dependencies
@@ -71,7 +71,7 @@ Claude verification (phase 8) uses a **scratch project** with the hook registere
 
 ### Phase 8: Local Claude verification
 
-- [ ] **8.1 Real Claude Code run** (needs the user at the keyboard)
+- [x] **8.1 Real Claude Code run** (needs the user at the keyboard)
   - `cargo install --path .`
   - In a scratch project, register the hook in `.claude/settings.local.json` (command `tool-gate-hook run --agent claude`, or an absolute path if `~/.cargo/bin` isn't on the hook's `PATH`), with a config using `level = "all"`, `max_value_len = 0`, and one allow, one deny and one ask rule.
   - Run prompts that use Bash, Read, Write, Edit, Glob, Grep and a subagent.

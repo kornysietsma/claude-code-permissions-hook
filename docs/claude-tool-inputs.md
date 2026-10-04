@@ -2,7 +2,7 @@
 
 What Claude Code sends to a `PreToolUse` hook on stdin, and so what `match."<path>"` rules can address. Rule field paths are dotted paths into this JSON, e.g. `tool_input.command` or `permission_mode`.
 
-> **The audit log is the authoritative source.** Set `level = "all"` and `max_value_len = 0` in `[audit]` to record exactly what your Claude Code version sends (see [tests/README.md](../tests/README.md) for turning a record into a fixture). This document is a convenience snapshot, last compiled on 2026-10-03 from the Claude Code hooks documentation and the sources below; per-tool `tool_input` fields have not yet been re-checked against captured payloads.
+> **The audit log is the authoritative source.** Set `level = "all"` and `max_value_len = 0` in `[audit]` to record exactly what your Claude Code version sends (see [tests/README.md](../tests/README.md) for turning a record into a fixture). This document is a convenience snapshot, last compiled on 2026-10-03 from the Claude Code hooks documentation and the sources below; the top-level fields and the `Bash`, `Read`, `Write`, `Edit`, `Agent` and `SubagentHandback` payloads were checked against captures from Claude Code 2.1.289 on 2026-10-04; the other tools are from the sources below and unchecked.
 
 ## Top-level fields
 
@@ -29,7 +29,14 @@ What Claude Code sends to a `PreToolUse` hook on stdin, and so what `match."<pat
 | `tool_input` | A per-tool object, documented below. |
 | `permission_mode`, `effort.level`, `agent_id`, `agent_type`, `session_id`, `prompt_id`, `tool_use_id`, `transcript_path`, `scratchpad_dir` | Available to rules, e.g. `match."permission_mode" = { equals = "plan" }`. `agent_id` and `agent_type` are only present when the call comes from a subagent. |
 
-Note: the subagent tool was called `Task` in earlier versions of Claude Code and appears to be `Agent` now. The test fixture `tests/fixtures/claude/agent.json` assumes `Agent`; a rule can cover both with `tool = "Task|Agent"`. To be confirmed from a real capture in plan step 8.1.
+Verified against Claude Code 2.1.289 (2026-10-04):
+
+- The subagent tool is `Agent` (it was `Task` in earlier versions; a rule can cover both with `tool = "Task|Agent"`).
+- In auto mode, subagent completion fires a pseudo-tool, `SubagentHandback`, with `tool_input.message`. It carries `agent_id` and `agent_type`, and a rule with no `tool` matches it.
+- `scratchpad_dir` is a top-level field (v2.1.257+), and `permission_mode` was `auto` in the captured session. The documented values are `default`, `plan`, `acceptEdits`, `auto`, `dontAsk` and `bypassPermissions`.
+- `Glob` and `Grep` are absent by default on macOS, Linux and WSL, where file searches reach hooks as `Bash` calls (`find` and `grep`, embedded `bfs` and `ugrep`). They are part of the default tool set on Windows, so their sections below are kept but unverified.
+
+The [official tools reference](https://code.claude.com/docs/en/tools-reference) lists the current tool names but not their `tool_input` fields. Tools it no longer lists, so not documented here: `MultiEdit`, `LS`, `BashOutput` and `KillShell` (the last two are replaced by `TaskOutput` and `TaskStop`).
 
 ## Source attribution
 
@@ -101,35 +108,6 @@ Performs exact string replacement in a file.
 | `old_string` | string | Yes | Exact text to replace |
 | `new_string` | string | Yes | Replacement text |
 | `replace_all` | boolean | No | Replace all occurrences (default: false) |
-
-### MultiEdit
-
-Performs multiple edits in a single file atomically.
-
-```json
-{
-  "file_path": "/absolute/path/to/file.txt",
-  "edits": [
-    {
-      "old_string": "first match",
-      "new_string": "first replacement",
-      "replace_all": false
-    },
-    {
-      "old_string": "second match",
-      "new_string": "second replacement"
-    }
-  ]
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `file_path` | string | Yes | Absolute path to the file |
-| `edits` | array | Yes | Array of edit operations |
-| `edits[].old_string` | string | Yes | Text to replace |
-| `edits[].new_string` | string | Yes | Replacement text |
-| `edits[].replace_all` | boolean | No | Replace all occurrences |
 
 ### NotebookEdit
 
@@ -207,22 +185,6 @@ Content search using ripgrep.
 | `multiline` | boolean | No | Enable multiline matching |
 | `head_limit` | number | No | Limit output to first N results |
 
-### LS
-
-Lists directory contents.
-
-```json
-{
-  "path": "/absolute/path/to/directory",
-  "ignore": ["node_modules", "*.log"]
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `path` | string | Yes | Absolute path to directory |
-| `ignore` | array | No | Glob patterns to exclude |
-
 ## Command Execution
 
 ### Bash
@@ -245,39 +207,9 @@ Executes shell commands.
 | `timeout` | number | No | Timeout in milliseconds (default: 120000, max: 600000) |
 | `run_in_background` | boolean | No | Run asynchronously |
 
-### BashOutput
-
-Retrieves output from background shell.
-
-```json
-{
-  "bash_id": "shell-abc123",
-  "filter": "error|warning"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `bash_id` | string | Yes | ID of the background shell |
-| `filter` | string | No | Regex to filter output lines |
-
-### KillShell
-
-Terminates a background shell.
-
-```json
-{
-  "shell_id": "shell-abc123"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `shell_id` | string | Yes | ID of shell to terminate |
-
 ## Agent Tools
 
-### Task (now `Agent`)
+### Agent (earlier versions: `Task`)
 
 Launches a subagent for complex tasks.
 
@@ -304,6 +236,20 @@ Launches a subagent for complex tasks.
 - `Explore` - Fast codebase exploration (Glob, Grep, Read, Bash)
 - `Plan` - Software architecture planning
 - `statusline-setup` - Configure status line (Read, Edit)
+
+### SubagentHandback
+
+Delivers a subagent's final report to the conversation that receives it. Per the tools reference it is only provided in auto mode (Claude Code v2.1.271+), to locally run subagents other than forks.
+
+```json
+{ "message": "I appended the line; the file is otherwise unchanged." }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message` | string | The subagent's final message |
+
+The top-level payload also carries `agent_id` and `agent_type`.
 
 ## Web Tools
 
@@ -343,9 +289,11 @@ Searches the web.
 
 ## Task Management
 
+The task list is now handled by `TaskCreate`, `TaskGet`, `TaskList` and `TaskUpdate` on current models (their `tool_input` fields are not captured here). Despite the names they are unrelated to the subagent tool `Task`, which is now `Agent`. `TodoWrite` is disabled by default in favour of them.
+
 ### TodoWrite
 
-Manages task list.
+Manages task list (older sessions, or with `CLAUDE_CODE_ENABLE_TASKS=0`).
 
 ```json
 {

@@ -77,7 +77,7 @@ Output on a decision:
 
 Passthrough = no stdout output, exit 0. (Claude also offers `"defer"`, which means the same thing — not used.)
 
-Note: Claude's `Task` tool now appears to be `Agent`; verify during phase 8 and update the example configs and fixtures.
+Verified in phase 8 (Claude Code 2.1.289, and the official tools reference): the subagent tool is `Agent` (it was `Task` in earlier versions); in auto mode subagent completion fires a pseudo-tool `SubagentHandback`; `Glob` and `Grep` are absent by default on macOS, Linux and WSL (searches arrive as `Bash` calls) but present on Windows.
 
 ### Copilot CLI (native camelCase `preToolUse` format)
 

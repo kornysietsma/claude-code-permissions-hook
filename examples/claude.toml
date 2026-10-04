@@ -30,7 +30,7 @@ match."tool_input.command" = { regex = '^git (status|diff|log|show)\b', not_rege
 # Allow: reading anywhere inside the project
 [[rule]]
 decision = "allow"
-tool = "Read|Glob|Grep"
+tool = "Read"
 description = "reads inside the project"
 match."tool_input.file_path" = { under = ["{cwd}"] }
 
