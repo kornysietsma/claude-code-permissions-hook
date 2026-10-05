@@ -50,6 +50,7 @@ match."tool_input.command" = { regex = '^git push\b' }
 [[rule]]
 decision = "deny"
 tool = "Bash"
+description = "recursive force-delete"
 reason = "Recursive force-delete is not allowed"
 match."tool_input.command" = { regex = '^rm .*-rf' }
 
@@ -70,5 +71,6 @@ match."tool_input.command" = { regex = "@legacy_python" }
 [[rule]]
 decision = "deny"
 tool = "Read|Edit|Write"
+description = "secrets files"
 reason = "Secrets files are off limits"
 match."tool_input.file_path" = { regex = '\.(env|secret)$' }

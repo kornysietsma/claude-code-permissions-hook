@@ -58,6 +58,7 @@ match."toolArgs.command" = { regex = '^git push\b' }
 [[rule]]
 decision = "deny"
 tool = "bash"
+description = "recursive force-delete"
 reason = "Recursive force-delete is not allowed"
 match."toolArgs.command" = { regex = '^rm .*-rf' }
 
@@ -78,6 +79,7 @@ match."toolArgs.command" = { regex = "@legacy_python" }
 [[rule]]
 decision = "deny"
 tool = "view|create"
+description = "secrets files"
 reason = "Secrets files are off limits"
 match."toolArgs.path" = { regex = '\.(env|secret)$' }
 
@@ -85,5 +87,6 @@ match."toolArgs.path" = { regex = '\.(env|secret)$' }
 [[rule]]
 decision = "deny"
 tool = "apply_patch"
+description = "secrets files"
 reason = "Secrets files are off limits"
 match."toolArgs" = { regex = '(?m)^\*\*\* (Add|Update|Delete) File: .*\.(env|secret)$' }

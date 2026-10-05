@@ -57,6 +57,7 @@ match."tool_input.command" = { regex = '^cargo (build|test|check)\b', not_regex 
 [[rule]]
 decision = "deny"
 tool = "Read"
+description = "secrets files"
 reason = "Secrets files are off limits"
 match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 ```

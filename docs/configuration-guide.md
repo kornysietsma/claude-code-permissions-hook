@@ -211,6 +211,7 @@ match."tool_input.file_path" = { under = ["{cwd}"] }
 [[rule]]
 decision = "deny"
 tool = "Read|Write|Edit"
+description = "secrets files"
 reason = "Secrets files are off limits"
 match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 ```
