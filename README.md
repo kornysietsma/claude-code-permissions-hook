@@ -1,74 +1,74 @@
-# Command Permissions Hook for Claude Code
+# tool-gate-hook
 
-A PreToolUse hook for Claude Code that provides granular control over which tools Claude can use, with support for allow/deny rules, pattern matching, and security exclusions.
+A `PreToolUse` hook for **Claude Code** and **GitHub Copilot CLI** (macOS, local CLI only) that does two jobs:
 
-NOTE: This is a workaround for current (December 2025) limitations in Claude Code permissions - [setting Bash permissions](https://docs.claude.com/en/docs/claude-code/iam#tool-specific-permission-rules) doesn't work consistently. Built following Anthropic's [hook guidelines](https://docs.claude.com/en/docs/claude-code/iam#additional-permission-control-with-hooks).
+1. **Gate**: auto-allow, auto-deny, or force a prompt (`ask`) for tool calls, using rules you write in a TOML file. Anything no rule matches passes through to the agent's normal permission flow.
+2. **Observe**: record every call to a JSONL audit log with the raw payload, which rules matched, in order, and which one decided. When an agent changes what it sends, the log shows you.
 
-This may be short-lived as Anthropic improves permissions. Use it if it helps, but you'll need basic Rust knowledge.
+Both agents use the same rule engine; only the payload shape and tool names differ.
 
-## Features
+This is a workaround for the limits of the agents' built-in permission rules (for example, Bash permissions that don't hold up against `a && b`). It is small and rule-driven, and you need Rust to build it.
 
-- All configuration is via a single `.toml` file - see [example.toml](./example.toml) for an example
-- Allow/deny rules with regex pattern matching for tool inputs
-- Exclude patterns for handling edge cases (e.g., block `..` in allowed paths)
-- Audit logging of tool use decisions to JSON file
+> **This has changed since I blogged about it.** It was `claude-code-permissions-hook`, a Claude-only hook with `[[allow]]` / `[[deny]]` rules; it has since been renamed, given a new config format and taught to work with Copilot CLI. To see the code as it was when the blog post was written, browse [the repository at that commit](https://github.com/kornysietsma/claude-code-permissions-hook/tree/ca0dca0588319ca12bc03b0dc0d6bd4f3e563b75).
 
-## Documentation
+## Install
 
-- **[Configuration Guide](./docs/configuration-guide.md)** - How to write rules for each supported tool
-- **[Tool Input Schemas](./docs/tool-input-schemas.md)** - Reference for Claude Code tool input formats
-
-## Installation
-
-Requires Rust. Install via [rustup](https://rustup.rs/) if you want to use this project. Rust is fun!
+Requires Rust ([rustup](https://rustup.rs/)).
 
 ```bash
-cargo build --release
+cargo install --path .
 ```
 
-Binary: `target/release/claude-code-permissions-hook`
+This puts `tool-gate-hook` in `~/.cargo/bin`. **Agents may run hooks with a `PATH` that doesn't include `~/.cargo/bin`**; if the hook doesn't fire, use the absolute path (e.g. `/Users/you/.cargo/bin/tool-gate-hook`) in the registration commands below.
 
-## Configuration
+## Quick start
 
-Create a TOML configuration file (see `example.toml`):
+Copy an example config to the default location for your agent and edit it:
+
+| | Claude Code | Copilot CLI |
+|---|---|---|
+| Example | [`examples/claude.toml`](./examples/claude.toml) | [`examples/copilot.toml`](./examples/copilot.toml) |
+| Default config | `~/.config/tool-gate-hook/claude.toml` | `~/.config/tool-gate-hook/copilot.toml` |
+| Registration | `~/.claude/settings.json` | `~/.copilot/hooks/tool-gate-hook.json` |
+
+```bash
+mkdir -p ~/.config/tool-gate-hook
+cp examples/claude.toml ~/.config/tool-gate-hook/claude.toml
+tool-gate-hook validate --agent claude
+```
+
+`--agent` is required (there is no auto-detection) and `--config PATH` overrides the default location.
+
+A minimal config:
 
 ```toml
 [audit]
-audit_file = "/tmp/claude-tool-use.json"
-# Audit level: off, matched (default), all
-# - off: no auditing
-# - matched: audit only tool use that hits a rule (allow/deny)
-# - all: audit everything including passthrough
-audit_level = "matched"
+file = "/tmp/tool-gate-hook-claude.jsonl"
 
-# Allow rules - checked after deny rules
-[[allow]]
-tool = "Read"
-file_path_regex = "^/Users/korny/Dropbox/prj/.*"
-file_path_exclude_regex = "\\.\\."  # Block path traversal
+[patterns]
+shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
 
-[[allow]]
+[[rule]]
+decision = "allow"
 tool = "Bash"
-command_regex = "^cargo (build|test|check|clippy|fmt|run)"
-command_exclude_regex = "&|;|\\||`|\\$\\("  # Block shell injection
+description = "cargo workflow"
+match."tool_input.command" = { regex = '^cargo (build|test|check)\b', not_regex = "@shell_chain" }
 
-[[allow]]
-tool = "Task"
-subagent_type = "codebase-analyzer"
-
-# Deny rules - checked first (take precedence)
-[[deny]]
-tool = "Bash"
-command_regex = "^rm .*-rf"
-
-[[deny]]
+[[rule]]
+decision = "deny"
 tool = "Read"
-file_path_regex = "\\.(env|secret)$"
+description = "secrets files"
+reason = "Secrets files are off limits"
+match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 ```
 
-## Claude Code Setup
+See the [Configuration guide](./docs/configuration-guide.md) for every option.
 
-Add to `.claude/settings.json`:
+## Registering the hook
+
+### User level (typical)
+
+Claude Code, in `~/.claude/settings.json`:
 
 ```json
 {
@@ -77,10 +77,7 @@ Add to `.claude/settings.json`:
       {
         "matcher": "*",
         "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/claude-code-permissions-hook run --config ~/.config/claude-code-permissions-hook.toml"
-          }
+          { "type": "command", "command": "tool-gate-hook run --agent claude" }
         ]
       }
     ]
@@ -88,93 +85,87 @@ Add to `.claude/settings.json`:
 }
 ```
 
-## Usage
+Copilot CLI, in `~/.copilot/hooks/tool-gate-hook.json`:
 
-### Validate Configuration
-
-```bash
-cargo run -- validate --config example.toml
+```json
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      { "type": "command", "bash": "tool-gate-hook run --agent copilot", "timeoutSec": 10 }
+    ]
+  }
+}
 ```
 
-### Run as Hook (reads JSON from stdin)
+### Project level (opt-in)
 
-```bash
-echo '<hook-input-json>' | cargo run -- run --config example.toml
-```
+For a project with its own needs, register a second hook with its own config file kept in the project. The agents run all matching hooks and combine them most-restrictive-wins, so no merging happens in this tool.
 
-### Run Tests
+- **Claude**: in `.claude/settings.json`, use the command
+  `tool-gate-hook run --agent claude --config "$CLAUDE_PROJECT_DIR/.claude/tool-gate-hook.toml"`.
+- **Copilot**: in `.github/hooks/tool-gate-hook.json`, use
+  `tool-gate-hook run --agent copilot --config .github/hooks/tool-gate-hook.toml`. Repo-level hooks run in the repository root, so the relative `--config` path works (a relative path resolves against the process's working directory).
 
-```bash
-cargo test
-```
+Each config names its own audit file. Pointing both at the same file is safe (lines are written under a file lock), and the `config` field in each record says which config wrote it.
 
-See `tests/` directory for integration tests and sample JSON inputs.
-
-## How It Works
+## How decisions are made
 
 ```mermaid
-flowchart TB
-    Start@{shape: rounded, label: "Claude attempts<br/>tool use"}
-    ReadInput[Read JSON from stdin]
-    LoadConfig[Load & compile<br/>TOML config]
-    LogUse[Log tool use<br/>to file]
-    CheckDeny@{shape: diamond, label: "Deny rule<br/>matches?"}
-    CheckAllow@{shape: diamond, label: "Allow rule<br/>matches?"}
-    OutputDeny[Output deny decision<br/>to stdout]
-    OutputAllow[Output allow decision<br/>to stdout]
-    NoOutput[No output<br/>passthrough to<br/>Claude Code]
-    EndDeny@{shape: rounded, label: "Tool blocked"}
-    EndAllow@{shape: rounded, label: "Tool permitted"}
-    EndPass@{shape: rounded, label: "Normal permission<br/>flow"}
-
-    Start --> ReadInput
-    ReadInput --> LoadConfig
-    LoadConfig --> LogUse
-    LogUse --> CheckDeny
-
-    CheckDeny -->|Yes| OutputDeny
-    CheckDeny -->|No| CheckAllow
-
-    CheckAllow -->|Yes| OutputAllow
-    CheckAllow -->|No| NoOutput
-
-    OutputDeny --> EndDeny
-    OutputAllow --> EndAllow
-    NoOutput --> EndPass
-
-    classDef processStyle fill:#e0e7ff,stroke:#4338ca,color:#1e1b4b
-    classDef decisionStyle fill:#fef3c7,stroke:#d97706,color:#78350f
-    classDef denyStyle fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef allowStyle fill:#d1fae5,stroke:#10b981,color:#064e3b
-    classDef passStyle fill:#f3f4f6,stroke:#6b7280,color:#1f2937
-    classDef startEndStyle fill:#ddd6fe,stroke:#7c3aed,color:#3b0764
-
-    class ReadInput,LoadConfig,LogUse processStyle
-    class CheckDeny,CheckAllow decisionStyle
-    class OutputDeny,EndDeny denyStyle
-    class OutputAllow,EndAllow allowStyle
-    class NoOutput,EndPass passStyle
-    class Start,StartEnd startEndStyle
+flowchart LR
+    A[Tool call payload] --> B[Evaluate every rule]
+    B --> C{Any match?}
+    C -- no --> P[Passthrough: normal permission flow]
+    C -- yes --> D{Strictest decision}
+    D -- deny --> X[Deny, with reason]
+    D -- ask --> Y[Ask the user]
+    D -- allow --> Z[Allow]
 ```
 
-Deny rules are checked first (block), then allow rules (permit). No match = passthrough to normal Claude Code permissions.
+Every rule is evaluated; the final decision is **deny > ask > allow** regardless of order, and no match means passthrough. Shell chaining isn't parsed: allow rules carry a `not_regex = "@shell_chain"` safety net, so a chained command makes the rule not match and falls through to you.
 
-See the [Configuration Guide](./docs/configuration-guide.md) for detailed rule syntax and security patterns.
+## Errors
+
+`tool-gate-hook run` always exits 0 (Copilot treats any non-zero exit as a deny).
+
+- **Config problem** (missing file, bad TOML, invalid regex): every call gets an `ask` with the error as the reason, plus a message on stderr. Loud, never locked out.
+- **Payload for the wrong agent or malformed**: passthrough with a stderr warning, and an error record in the audit log. This is what happens if a `--agent copilot` hook is registered in `.claude/settings.json`, which Copilot also reads. Register Copilot hooks under `.github/hooks/` or `~/.copilot/hooks/` instead; see [Copilot payloads](./docs/copilot-tool-inputs.md) for what Copilot sends to a `.claude` hook.
+- **Audit write failure**: stderr warning only.
+
+## Troubleshooting
+
+- **Nothing happens**: check the hook is registered, then run it by hand: `cat tests/fixtures/claude/bash.json | tool-gate-hook run --agent claude`. No output means passthrough.
+- **`command not found` in the agent**: use the absolute path to the binary (see Install).
+- **Every call asks with "config error"**: run `tool-gate-hook validate --agent claude` to see the error.
+- **A rule never matches**: `validate` warns when a field path doesn't start with a payload key known for the agent (for example `toolArgs.path` in a Claude config). Set `level = "all"` and `max_value_len = 0` in `[audit]` and look at the real payloads in the log.
+
+## Status
+
+Both agents have been checked on a real install (2026-10-04): payloads captured, and `allow`, `deny`, `ask` and config-error behaviour seen in the UI. Things to know about Copilot CLI:
+
+- Copilot picks its tools per model. Haiku 4.5 created files with `create` (`toolArgs.path`, `file_text`), while a GPT model used `apply_patch`, whose `toolArgs` is the patch text as a plain string: gate it with a regex on `toolArgs`, not a path. Write rules for both. `grep` arrives as `rg`, and `glob` and `rg` carry their directory in `toolArgs.paths`.
+- Copilot also runs hooks from `.claude/settings.json`, sending Claude-format payloads with Claude's tool names (`Read`, `Edit`, ...) but Copilot's field names (`tool_input.path`). If you use Copilot, configure it to ignore `.claude/` files.
+- A deny from one hook can stop other hooks running for that call, so a repo-level audit log may miss calls that a user-level hook denied.
+- Not tested: `edit` (never seen), whether Copilot honours Claude-format decisions from a `.claude` hook, and whether it reads the user-level `~/.claude/settings.json`.
+
+The details are in [Copilot payloads](./docs/copilot-tool-inputs.md).
+
+## Documentation
+
+- [Configuration guide](./docs/configuration-guide.md): the full config reference
+- [Claude payloads](./docs/claude-tool-inputs.md) and [Copilot payloads](./docs/copilot-tool-inputs.md): what the agents send, i.e. what rules can match
+- [`examples/`](./examples): ready-to-copy configs, including an illustrative Mermaid workflow
+- [Copilot verification](./docs/copilot-verification.md): how Copilot CLI was checked on a real install, repeatable for a new Copilot version
+- [Review findings](./docs/review-findings.md): the reviews before and after the rework from `claude-code-permissions-hook`
 
 ## Development
 
 ```bash
-cargo test      # Run tests
-cargo clippy    # Lint code
-cargo fmt       # Format code
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-## Logging
-
-**Audit file** (JSON): Records tool use to `audit_file`. Set `audit_level` to `off`, `matched` (default), or `all`.
-
-**Diagnostic log** (stderr): Set `RUST_LOG=debug` for rule matching debug output.
+See [tests/README.md](./tests/README.md) for the test layout and how to capture real payloads into fixtures.
 
 ## License
 
-See LICENSE file for details.
+MIT; see [LICENSE](./LICENSE).

@@ -1,101 +1,100 @@
-#![forbid(unsafe_code)]
-#![warn(clippy::all)]
-#![warn(rust_2018_idioms)]
-#![warn(rust_2024_compatibility)]
-#![warn(deprecated_safe)]
-
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
-use env_logger::Env;
-use log::info;
-use std::path::PathBuf;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-use claude_code_permissions_hook::auditing::audit_tool_use;
-use claude_code_permissions_hook::{
-    Decision, HookInput, HookOutput, load_config, process_hook_input_with_config, validate_config,
-};
+use tool_gate_hook::{Agent, Config, Context, auditing, validate};
 
 #[derive(Debug, Parser)]
-#[clap(author, version, about = "Claude Code command permissions hook")]
+#[command(
+    author,
+    version,
+    about = "PreToolUse hook that gates agent tool use with allow/deny/ask rules"
+)]
 struct Opts {
-    #[clap(subcommand)]
+    #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Run the hook (reads JSON from stdin, outputs decision to stdout)
-    Run {
-        #[clap(short, long, value_parser)]
-        config: PathBuf,
-    },
+    Run(Target),
     /// Validate a configuration file
-    Validate {
-        #[clap(short, long, value_parser)]
-        config: PathBuf,
-    },
+    Validate(Target),
 }
 
-fn run_hook(config_path: PathBuf) -> Result<()> {
-    let (config, deny_rules, allow_rules) =
-        load_config(&config_path).context("Failed to load configuration")?;
+#[derive(Debug, clap::Args)]
+struct Target {
+    #[arg(short, long, value_enum)]
+    agent: Agent,
+    /// Defaults to ~/.config/tool-gate-hook/<agent>.toml
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+}
 
-    let input = HookInput::read_from_stdin().context("Failed to read hook input")?;
-
-    let result = process_hook_input_with_config(&config, &input)?;
-
-    // Audit the decision
-    audit_tool_use(
-        &config.audit.audit_file,
-        config.audit.audit_level,
-        &input,
-        result.decision,
-        result.reason.as_deref(),
-    );
-
-    // Output decision to stdout (passthrough = no output)
-    match result.decision {
-        Decision::Allow => {
-            let output = HookOutput::allow(result.reason.unwrap_or_default());
-            output.write_to_stdout()?;
-        }
-        Decision::Deny => {
-            let output = HookOutput::deny(result.reason.unwrap_or_default());
-            output.write_to_stdout()?;
-        }
-        Decision::Passthrough => {
-            // No output for passthrough
-        }
+impl Target {
+    fn config_path(&self, home: &Path) -> PathBuf {
+        self.config
+            .clone()
+            .unwrap_or_else(|| self.agent.default_config_path(home))
     }
+}
 
-    // Suppress unused variable warning - rules are used for config validation
-    let _ = (deny_rules, allow_rules);
+fn home() -> Result<PathBuf> {
+    std::env::home_dir().context("cannot determine home directory")
+}
 
+fn run_hook(target: &Target) -> Result<()> {
+    let mut stdin = String::new();
+    io::stdin()
+        .read_to_string(&mut stdin)
+        .context("cannot read stdin")?;
+    let context = Context::new(home()?);
+    let config_path = target.config_path(&context.home);
+    let outcome = tool_gate_hook::run(target.agent, &config_path, &stdin, &context);
+    for warning in &outcome.warnings {
+        eprintln!("{warning}");
+    }
+    if let Some((file, record)) = &outcome.audit
+        && let Err(e) = auditing::append(file, record)
+    {
+        eprintln!("tool-gate-hook: cannot write audit record: {e:#}");
+    }
+    if let Some(output) = outcome.output {
+        println!("{output}");
+    }
     Ok(())
 }
 
-fn run_validate_config(config_path: PathBuf) -> Result<()> {
-    let (deny_count, allow_count) = validate_config(&config_path)?;
-
-    let config = claude_code_permissions_hook::Config::load_from_file(&config_path)?;
-
-    info!("Configuration is valid!");
-    info!("  Deny rules: {}", deny_count);
-    info!("  Allow rules: {}", allow_count);
-    info!("  Audit file: {}", config.audit.audit_file.display());
-    info!("  Audit level: {:?}", config.audit.audit_level);
-
+fn run_validate_config(target: &Target) -> Result<()> {
+    let path = target.config_path(&home()?);
+    let config =
+        Config::load(&path).with_context(|| format!("invalid config {}", path.display()))?;
+    let validation = validate::validate(target.agent, &config);
+    for warning in &validation.warnings {
+        eprintln!("warning: {warning}");
+    }
+    println!("{} is valid\n{}", path.display(), validation.summary);
     Ok(())
 }
 
-fn main() -> Result<()> {
-    // Initialize diagnostic logger from RUST_LOG env var (default: warn)
-    env_logger::Builder::from_env(Env::default().default_filter_or("warn")).init();
-
-    let opts = Opts::parse();
-
-    match opts.command {
-        Commands::Run { config } => run_hook(config),
-        Commands::Validate { config } => run_validate_config(config),
+fn main() -> ExitCode {
+    match Opts::parse().command {
+        // A non-zero exit is a deny in Copilot, so `run` reports errors on stderr and passes through
+        Commands::Run(target) => {
+            if let Err(e) = run_hook(&target) {
+                eprintln!("tool-gate-hook: {e:#}");
+            }
+            ExitCode::SUCCESS
+        }
+        Commands::Validate(target) => match run_validate_config(&target) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tool-gate-hook: {e:#}");
+                ExitCode::FAILURE
+            }
+        },
     }
 }

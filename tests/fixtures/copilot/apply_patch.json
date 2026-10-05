@@ -1,0 +1,7 @@
+{
+  "sessionId": "sess-1",
+  "timestamp": 1760000000000,
+  "cwd": "/Users/test/project",
+  "toolName": "apply_patch",
+  "toolArgs": "*** Begin Patch\n*** Update File: src/main.rs\n@@\n-foo\n+bar\n*** End Patch\n"
+}

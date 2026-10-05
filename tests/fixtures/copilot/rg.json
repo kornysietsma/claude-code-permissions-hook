@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess-1",
+  "timestamp": 1760000000000,
+  "cwd": "/Users/test/project",
+  "toolName": "rg",
+  "toolArgs": {
+    "-n": true,
+    "head_limit": 100,
+    "output_mode": "content",
+    "paths": "/Users/test/project",
+    "pattern": "hello"
+  }
+}

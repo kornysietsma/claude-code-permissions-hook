@@ -1,0 +1,20 @@
+{
+  "session_id": "0d5f6c1e-test",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/Users/someone/.claude/projects/-Users-someone-prj-demo/0d5f6c1e-test.jsonl",
+  "cwd": "/Users/someone/prj/demo",
+  "scratchpad_dir": "/private/tmp/claude-501/-Users-someone-prj-demo/0d5f6c1e-test/scratchpad",
+  "permission_mode": "default",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cargo test --all",
+    "description": "Run tests",
+    "timeout": 120000,
+    "run_in_background": false
+  },
+  "tool_use_id": "toolu_01TESTbash"
+}

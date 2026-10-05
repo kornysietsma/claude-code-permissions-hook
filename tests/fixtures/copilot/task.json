@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess-1",
+  "timestamp": 1760000000000,
+  "cwd": "/Users/test/project",
+  "toolName": "task",
+  "toolArgs": {
+    "agent_type": "task",
+    "description": "List repository files",
+    "mode": "sync",
+    "name": "repo-file-list",
+    "prompt": "List the files in the repository. Do not modify files."
+  }
+}

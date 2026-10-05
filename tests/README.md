@@ -1,37 +1,43 @@
-# Test Directory
-
-This directory contains integration tests and test fixtures for the command permissions hook.
-
-## Structure
-
-- `integration_test.rs` - Rust integration tests that test the library's public API
-- `test_config.toml` - Configuration file designed for the test fixtures
-- `*.json` - Test fixture files with sample hook inputs
-
-## Running Tests
+# Tests
 
 ```bash
 cargo test
 ```
 
-To run only the integration tests:
+The gate for every change is:
 
 ```bash
-cargo test --test integration_test
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-## Test Fixtures
+## Layout
 
-The JSON files are sample hook inputs used by the integration tests:
+| File | What it covers |
+|------|----------------|
+| `config.rs` | Config parsing and error messages (`Config::from_toml`) |
+| `claude.rs` | Acceptance tests for the Claude agent: output shape, tiers and precedence, each matcher, `under` with symlinks and `..`, error handling |
+| `copilot.rs` | The same for Copilot: flat output shape, lowercase tool names, `toolArgs` rules, mismatched payloads in both directions |
+| `audit.rs` | Audit records with a fixed clock, level filtering, truncation, error records |
+| `examples.rs` | Every file in `examples/` validates without warnings; the Mermaid example's scenarios |
+| `common/mod.rs` | Shared helpers: loading a fixture, running the hook with a config in a temp directory |
+| `smoke.rs` | A handful of tests that spawn the real binary: CLI wiring, exit codes, `validate` output, the real audit file |
+| `fixtures/claude/`, `fixtures/copilot/` | Sample hook payloads |
 
-| File | Description | Expected Result |
-|------|-------------|-----------------|
-| `read_allowed.json` | Read within allowed path | Allow |
-| `read_path_traversal.json` | Read with `../` in path | Deny |
-| `bash_allowed.json` | Safe `cargo test` command | Allow |
-| `bash_injection.json` | Command with `&&` injection | Deny |
-| `unknown_tool.json` | Unrecognized tool name | Passthrough |
+Acceptance tests run in-process: they call `tool_gate_hook::run` with a fixture payload, a config written to a temp directory and an injected `Context` (temp home, fixed clock) and assert on the whole `Outcome`. Smoke tests set `HOME` to a temp directory so nothing touches your real config.
 
-## Test Configuration
+Coverage goal: enough to be confident it works, not exhaustive. Main behaviours and security-relevant edge cases; one representative case per behaviour.
 
-The tests use `test_config.toml` which has rules matching the test fixtures. This is separate from `example.toml` in the project root, which demonstrates a real-world configuration.
+## Fixtures
+
+`fixtures/claude/` holds Claude Code payloads (`bash`, `read`, `write`, `edit`, `agent`, `subagent_handback`). `fixtures/copilot/` holds Copilot payloads (`bash`, `view`, `create`, `glob`, `rg`, `task`, `apply_patch`), and `fixtures/copilot_via_claude/` what Copilot sends to a `.claude/settings.json` hook (`bash`, `read`, `edit`). All have shapes captured from real agents, with placeholder values (paths, ids).
+
+### Capturing a real payload
+
+Set `level = "all"` and `max_value_len = 0` in the config's `[audit]` section, make the agent do the thing, then pull the payload out of the log with `jq`. For example, the first Bash call:
+
+```bash
+jq -c 'select(.payload.tool_name == "Bash") | .payload' /tmp/tool-gate-hook-claude.jsonl \
+  | head -n 1 | jq . > tests/fixtures/claude/bash.json
+```
+
+For Copilot select on `.payload.toolName == "bash"` instead. Scrub anything private (paths, session ids) before committing a fixture, then rerun the tests.

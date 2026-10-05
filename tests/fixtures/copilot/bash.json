@@ -1,0 +1,10 @@
+{
+  "sessionId": "sess-1",
+  "timestamp": 1760000000000,
+  "cwd": "/Users/test/project",
+  "toolName": "bash",
+  "toolArgs": {
+    "command": "cargo test",
+    "description": "Run the tests"
+  }
+}
