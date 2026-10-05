@@ -6,6 +6,7 @@ description = "PreToolUse hook that gates Claude Code and Copilot CLI tool use w
 license = "MIT"
 authors = ["Korny Sietsma <korny@sietsma.com>"]
 readme = "README.md"
+repository = "https://github.com/kornysietsma/tool-gate-hook"
 
 [dependencies]
 anyhow = "1.0.104"

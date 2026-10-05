@@ -9,7 +9,7 @@ Both agents use the same rule engine; only the payload shape and tool names diff
 
 This is a workaround for the limits of the agents' built-in permission rules (for example, Bash permissions that don't hold up against `a && b`). It is small and rule-driven, and you need Rust to build it.
 
-> **This has changed since I blogged about it.** It was `claude-code-permissions-hook`, a Claude-only hook with `[[allow]]` / `[[deny]]` rules; it has since been renamed, given a new config format and taught to work with Copilot CLI. To see the code as it was when the blog post was written, browse [the repository at that commit](https://github.com/kornysietsma/claude-code-permissions-hook/tree/ca0dca0588319ca12bc03b0dc0d6bd4f3e563b75).
+> **This has changed since I blogged about it.** It was `claude-code-permissions-hook`, a Claude-only hook with `[[allow]]` / `[[deny]]` rules; it has since been renamed, given a new config format and taught to work with Copilot CLI. To see the code as it was when the blog post was written, browse [the repository at that commit](https://github.com/kornysietsma/tool-gate-hook/tree/ca0dca0588319ca12bc03b0dc0d6bd4f3e563b75).
 
 ## Install
 

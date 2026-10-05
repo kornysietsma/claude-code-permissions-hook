@@ -30,10 +30,10 @@ rsync -av --delete --exclude=/target --exclude=/.git --exclude=/.claude --exclud
 
 A first pull copies about 45 files. Rerun it any time the home copy changes; it is safe to repeat.
 
-If rsync is awkward, the branch is also on GitHub (the two give the same code):
+If rsync is awkward, the code is also on GitHub (the two give the same code):
 
 ```bash
-git clone -b rework-for-copilot git@github.com:kornysietsma/claude-code-permissions-hook.git ~/tool-gate-hook-src
+git clone git@github.com:kornysietsma/tool-gate-hook.git ~/tool-gate-hook-src
 ```
 
 #### Why the sync is built like this
