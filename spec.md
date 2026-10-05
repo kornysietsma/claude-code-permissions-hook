@@ -27,7 +27,7 @@ A shell call is allowed only when **every** segment is allowed by a command rule
 - Argument-level matching DSL (quantifiers over args, flag/operand parsing). Fields exist in the segment object and are reachable by field path, but are not documented as a rule-writing surface.
 - Tracking variable values, or evaluating expansions.
 - Unwrapping `xargs`, `find -exec`, `sudo` or arbitrary wrappers.
-- Parsing PowerShell or non-bash shells.
+- Parsing PowerShell, or zsh-specific syntax (it hits a floor instead).
 - Compatibility with the current config format for shell-tool allows.
 
 ## Concepts
@@ -44,6 +44,18 @@ Defined by the agent adapter (`src/agent.rs`), not by config:
 Copilot running `.claude/settings.json` hooks sends Claude-format payloads; with `--agent claude` those are handled as Claude `Bash` calls (already the case).
 
 If the shell tool's command field is missing or not a string, the call is evaluated as `unsupported` (ask floor) after `[[rule]]` deny/ask checks.
+
+### Target shells: zsh and bash
+
+Claude Code runs `Bash` tool commands in the user's shell, which on macOS is **zsh**; Copilot's `bash` tool uses bash. Commands are parsed with a bash grammar (brush-parser). For the static simple commands that can be allowed, zsh and bash agree; where they differ, the difference must land on a floor:
+
+- Unquoted `$var` isn't word-split in zsh: irrelevant, any parameter expansion is already `expansion`.
+- zsh glob qualifiers (`*(e:'cmd':)`) contain a glob (`expansion`) or are a bash syntax error (`parse_error`).
+- zsh **equals expansion**: an unquoted word starting with `=` (`=python3`) expands to a command path. Counted as `expansion`.
+- zsh-only syntax (`${(f)x}`, `print -r --`, …) fails to parse or contains an expansion.
+- Shell-state builtins that change later segments (aliases, options, traps) are `shell_reentry` floors (below).
+
+Differential tests compare our word splitting with both `zsh -f` and `/bin/bash` (macOS ships bash 3.2).
 
 ### Segment
 
@@ -95,14 +107,18 @@ Floors are built-in and can't be configured away. Each floor contributes `ask` (
 |-----------|-----------|
 | `parse_error` | the parser rejects the command |
 | `unsupported` | any syntax-tree node kind not on the walker's allow-list, unsupported wrapper options, missing or non-string command field |
-| `shell_reentry` | a segment `name` (basename) is `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `eval`, `source` or `.`, whatever its arguments |
+| `shell_reentry` | a segment `name` (basename) is a shell (`sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`), runs code (`eval`, `source`, `.`, `exec`, `trap`), or changes how later commands run (`alias`, `unalias`, `set`, `setopt`, `unsetopt`, `shopt`, `emulate`, `zmodload`, `enable`, `disable`, `autoload`), whatever its arguments. `command` and `builtin` are ordinary commands. |
 | `exec_tool` | `name` (basename) is `xargs`; or `name` is `find` and any arg is `-exec`, `-execdir`, `-ok`, `-okdir` or `-delete` |
 | `dynamic_command` | the command name contains any expansion or substitution |
-| `expansion` | any arg, env value or redirect target contains parameter expansion (`$x`, `${…}`, `$1`, …), arithmetic `$((…))`, command or process substitution, an unquoted glob (`*`, `?`, `[…]`) or brace expansion (`{a,b}`, `{1..3}`). Quoted characters are literal. A leading `~` is not expansion. |
-| `env_assign` | an assignment whose name doesn't match any `[shell] safe_env` regex |
+| `expansion` | any arg, env value or redirect target contains parameter expansion (`$x`, `${…}`, `$1`, …), arithmetic `$((…))`, command or process substitution, an unquoted glob (`*`, `?`, `[…]`) or brace expansion (`{a,b}`, `{1..3}`), or starts with an unquoted `=` (zsh equals expansion); also any of these in the body of a heredoc whose delimiter is unquoted (`<<EOF`; bodies of `<<'EOF'` / `<<"EOF"` are literal), and in a here-string (`<<<`) word. Quoted characters are literal. A leading `~` is not expansion. |
+| `env_assign` | an assignment whose name doesn't match any `[shell] safe_env` regex: inline prefixes, `env NAME=…`, assignment-only segments (`PATH=./evil; cargo test`), and `NAME=value` arguments of `export`, `declare`, `typeset`, `local`, `readonly` |
 | `cd` | `cd` / `pushd` to a path that isn't static and inside `{cwd}`; bare `cd`, `cd -`, `popd`, or any `cd` option |
 
-Recursion into substitutions still happens when `expansion` fires, so a deny on an inner command wins.
+Recursion into substitutions (including those in unquoted heredoc bodies) still happens when `expansion` fires, so a deny on an inner command wins.
+
+#### Assignment-only segments
+
+A segment with assignments and no command word (`FOO=1`) is neutral, like an in-project `cd`: it needs no command rule, and its names go through `env_assign`. `export`, `declare`, `typeset`, `local` and `readonly` are ordinary commands (they need a command rule to be allowed), but their `NAME=value` arguments are also checked by `env_assign`.
 
 #### `cd` handling
 
@@ -272,7 +288,7 @@ tool-gate-hook explain --agent claude --config path.toml --payload record-or-pay
 - Use **`brush-parser`** (MIT, 0.4.x; pin the version; needs Rust 1.88+). Consider the `serde` feature for debugging only; the segment object is our own type.
 - The walker uses an explicit **allow-list** of node kinds. Anything else → `unsupported`.
 - **Step 1 is a spike**: confirm brush-parser exposes enough word structure (quoted vs unquoted parts, expansions, heredocs, redirect fds, spans for `source`). If it doesn't, fall back to `tree-sitter-bash` with the same walker design.
-- **Differential tests against real bash**: for a table of tricky inputs, compare our `name` + `args` with what bash produces, e.g. `bash -c 'printf "%s\0" "$@"' _ <words>` style, or by running the command with a fake `PATH` of echo-args scripts. Include `$'…'`, backslashes in double quotes, line continuations, comments, adjacent quoted parts (`a"b"'c'`), empty strings, and heredocs. These run on macOS where bash exists, and are skipped if it doesn't.
+- **Differential tests against real shells**: for a table of tricky static simple commands, compare our `name` + `args` with what **`zsh -f`** and **`/bin/bash`** produce, by running each command line with its command word replaced by a function that prints its arguments NUL-separated. Include `$'…'`, backslashes in and out of double quotes, line continuations, comments, adjacent quoted parts (`a"b"'c'`), empty strings, `#` mid-word, and words starting `=`. Cases where the shells disagree must be asserted to hit a floor instead. Each shell's tests are skipped if it isn't installed.
 
 ## Code changes (sketch)
 
@@ -310,10 +326,12 @@ Keep `run()` free of I/O beyond reading the config; `explain` reuses it.
 ## Testing
 
 - Unit tests (small pure functions): word unquoting and re-quoting for `text`, path-like detection, wrapper option parsing, expansion detection.
-- Differential tests against bash (above).
+- Differential tests against zsh and bash (above).
 - Acceptance tests through `tool_gate_hook::run` with fixtures, covering at least:
   - `cargo build 2>&1 && cargo test` → allow; `foo && cargo test` → passthrough; `cargo test && rm -rf /` with a deny → deny.
   - heredoc / commit message containing a `pip install` line → not denied by `legacy_python`.
+  - `cat <<EOF` with `$(curl x)` in the body → ask (and deny with a `curl` deny rule); the same with `<<'EOF'` → no floor.
+  - `PATH=./evil; cargo test` and `export GIT_PAGER=x; git log` → ask; `alias ls=x` → ask; `=python3 x.py` → ask.
   - each floor → ask, and a deny beats a floor.
   - `env RUST_LOG=debug cargo test` → allow; `GIT_PAGER=x git log` → ask; `PATH=./evil cargo test` → ask.
   - `timeout 60 cargo test` → allow; `timeout --bogus 60 cargo test` → ask.
@@ -329,12 +347,4 @@ Keep `run()` free of I/O beyond reading the config; `explain` reuses it.
 
 ## Implementation order
 
-1. brush-parser spike and differential tests against bash.
-2. Segment extraction, recursion, wrappers, `cd` tracking and floors (`src/shell.rs`).
-3. Command rules and `paths_under`.
-4. Construct rules and `[shell] safe_env`.
-5. Combiner, reasons, the `[[rule]]` shell-allow error, audit changes.
-6. `explain`.
-7. Example configs, docs, AGENTS.md, and the two skills.
-
-Each step passes the quality gate (`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`).
+In vertical slices; see `plan.md`. Each step passes the quality gate (`cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`).
