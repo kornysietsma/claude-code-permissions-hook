@@ -65,7 +65,7 @@ pub struct ShellEvaluation { analysis: Analysis, segment_decisions: Vec<SegmentD
 - **Rule indexes are per kind**, because TOML deserialises each array of tables separately and loses their relative order.
 - **The combiner** works on a flat list of `Match`es plus per-segment decisions, in the spec's order: `[[rule]]` matches (file order), floors (textual order), segments (textual order), construct rules (file order).
 - **Tests build Bash payloads in code.** A `common::claude_bash(command, cwd)` helper (and a Copilot equivalent) avoids a fixture per command. The captured fixtures stay for payload-shape tests.
-- **Real-world corpus.** `scripts/shell-corpus.sh` extracts the unique shell commands from an audit log (with `jq`) into `tests/fixtures/shell/corpus.local.txt`, which is **gitignored**: it may contain private paths. An `#[ignore]`d test analyses every line and prints a summary (counts per floor, parse errors), for spotting gaps. A sanitised, curated subset is committed as `tests/fixtures/shell/corpus.txt` and asserted in normal tests.
+- **Real-world corpus.** `scripts/shell-corpus.sh` extracts the unique shell commands from an audit log (with `jq`) into `tests/fixtures/shell/corpus.local.jsonl`, which is **gitignored**: it may contain private paths. An `#[ignore]`d test analyses every line and prints a summary (counts per floor, parse errors), for spotting gaps. A sanitised, curated subset is committed as `tests/fixtures/shell/corpus.jsonl` and asserted in normal tests.
 - **Differential tests** live in `tests/shell_differential.rs`. For each case, run `<shell> -c '__d() { printf "%s\0" "$@"; }; __d <command line>'` with `zsh -f` and `/bin/bash`, and compare the NUL-separated words with our `[name] + args`. Skip a shell that isn't installed. Only static simple commands are used; cases where the shells disagree are asserted to hit a floor instead.
 
 ### Things to keep in mind throughout
@@ -79,10 +79,10 @@ pub struct ShellEvaluation { analysis: Analysis, segment_decisions: Vec<SegmentD
 
 ### Step 1: spike brush-parser
 
-- [ ] Add `brush-parser = "=0.4.0"` (pinned). Check `cargo tree` for the dependency footprint, and that the build still passes the gate.
-- [ ] Write `scripts/shell-corpus.sh` and gitignore `tests/fixtures/shell/corpus.local.txt`.
-- [ ] A temporary `#[ignore]`d test that, for each corpus line and a list of nasty cases, prints the AST and the word pieces for every word.
-- [ ] Confirm, and record in Findings:
+- [x] Add `brush-parser = "=0.4.0"` (pinned). Check `cargo tree` for the dependency footprint, and that the build still passes the gate.
+- [x] Write `scripts/shell-corpus.sh` and gitignore `tests/fixtures/shell/corpus.local.jsonl`.
+- [x] A temporary `#[ignore]`d test that, for each corpus line and a list of nasty cases, prints the AST and the word pieces for every word.
+- [x] Confirm, and record in Findings:
   - quoted versus unquoted pieces are distinguishable, and `$'…'` and escape sequences are decoded, or we can decode them ourselves;
   - heredoc bodies and whether the delimiter was quoted are available;
   - redirect fds and operators are available;
@@ -90,7 +90,7 @@ pub struct ShellEvaluation { analysis: Analysis, segment_decisions: Vec<SegmentD
   - parse errors are returned, not panics, for garbage input;
   - extglob on versus off for `*(…)`;
   - how `time`, `!`, `coproc` and `[[ ]]` appear.
-- [ ] Decide go or no-go. If no-go, switch to `tree-sitter-bash` and redo this step.
+- [x] Decide go or no-go. If no-go, switch to `tree-sitter-bash` and redo this step.
 
 **Verify:** the gate passes. The Findings section answers each bullet above. The spike test is either deleted or turned into the start of step 2's unit tests.
 
@@ -103,7 +103,7 @@ The smallest useful thing: `cargo build 2>&1 && cargo test` is allowed by comman
   - `FieldCondition::matches(value, cwd, home)`;
   - audit references gain `"kind": "rule"`. Update the audit tests.
 - [ ] `Agent::shell_tool()`.
-- [ ] `shell::analyse` for lists, pipelines, subshells, brace groups and simple commands with static words; redirects recorded. The `ParseError` and `Unsupported` floors. Any non-static word is `Unsupported` for now; step 4 refines it to `Expansion` and `DynamicCommand`.
+- [ ] `shell::analyse` for lists, pipelines, subshells, brace groups and simple commands with static words; redirects recorded. The `ParseError` and `Unsupported` floors. Any non-static word is `Unsupported` for now; step 4 refines it to `Expansion` and `DynamicCommand`. Static means literal pieces only (with `EscapeSequence` and `$'…'` decoded as in the Findings), **and** no unquoted `Text` containing `$`, glob or brace characters, or starting with `=`. The `$` check is a security fix from the spike (zsh `${(f)x}`), so it's needed from the first slice.
 - [ ] `text` re-quoting: plain if `[A-Za-z0-9_@%+=:,./-]+`, else single-quoted with `'\''`.
 - [ ] Config: `[[command_rule]]` (decision, description, reason, match), with an error for a command rule with no conditions. An error for an allow `[[rule]]` that can match the shell tool (`tool` omitted, or its regex matches the shell tool name).
 - [ ] Policy: for shell-tool calls, run the analysis, evaluate command rules per segment, and combine. Floors become `Match`es of kind `Floor`. The reason gets ` — in "<text>"` or ` — <construct description> in "<source>"`.
@@ -245,7 +245,7 @@ Built early so every later step can be checked by hand.
 ### Step 11: migrate the live config and dogfood
 
 - [ ] Rewrite `~/.config/tool-gate-hook/claude.toml` (and Copilot's) in the new format; `validate`.
-- [ ] Replay the corpus: for each line in `corpus.local.txt`, compare the old decision (from the audit log) with the new `explain` decision. Review every change of decision, especially new allows.
+- [ ] Replay the corpus: for each line in `corpus.local.jsonl`, compare the old decision (from the audit log) with the new `explain` decision. Review every change of decision, especially new allows.
 - [ ] `cargo install --path .`, then use Claude Code for a session with `level = "all"`. Review the audit log for surprising floors or allows.
 - [ ] Copilot: run the relevant parts of `docs/copilot-verification.md` with a compound command; fold the results back into fixtures.
 - [ ] Remove the `legacy_python` heredoc caveat from AGENTS.md.
@@ -264,3 +264,30 @@ Built early so every later step can be checked by hand.
 ## Findings
 
 Record spike results and surprises here as steps land.
+
+### Step 1: brush-parser spike (2026-10-05)
+
+**Go.** `brush-parser = "=0.4.0"` adds about 9 direct dependencies (`bon`, `cached`, `peg`, `tracing`, `thiserror`, `insta`, …); the build and gate are fine. The spike is `tests/shell_spike.rs` (ignored tests); delete it in step 2 once real tests cover the same ground.
+
+Local corpus: 162 unique Claude commands, 0 parse errors, 0 word-parse errors. 6 use `for` loops (→ `unsupported`). 21 contain parameter expansions or substitutions (→ `expansion` ask), mostly scratch variables like `$f` and `$d`. That's a hint for the skills and docs: tell agents to avoid shell variables in commands they want auto-allowed. 5 have heredocs, all with quoted delimiters.
+
+What the parser gives:
+
+- **Quoting**: `word::parse` pieces distinguish `Text` (unquoted), `SingleQuotedText`, `DoubleQuotedSequence` (nested pieces), `AnsiCQuotedText`, `EscapeSequence`, `TildeExpansion`, `ParameterExpansion`, `CommandSubstitution(String)`, `BackquotedCommandSubstitution(String)` and `ArithmeticExpression`.
+  - `EscapeSequence` is raw (`"\\ "`, `"\\$"`, `"\\\""`): the value is the character after the backslash. Inside double quotes, `\b` and `\|` stay as `Text` with the backslash, which is correct bash behaviour.
+  - `AnsiCQuotedText` is **raw** (`"\\x41\\u00e9\\n"`): decode it ourselves. Decode `\n \t \r \\ \' \" \a \b \e \f \v \xHH` and octal; treat anything else (`\u`, `\U`, `\c`) as `unsupported`.
+  - Line continuations are already joined (`a\<newline>b` → `ab`). Comments are dropped.
+- **Globs, braces and `=` are plain `Text`**: `*.rs`, `{a,b}`, `@(a|b)`, `*(e:…:)` and `=python3` all arrive as `Text`, so detect them ourselves in unquoted text.
+- **Danger: zsh `${(f)x}` parses as `Text("$") + Text("{(f)x}")`**, which looks static. Rule: an unquoted `Text` containing `$` is `expansion`. (Quoted `$` is fine: `'$x'` is `SingleQuotedText`, and `"\$"` is an escape.)
+- **Heredocs**: `IoRedirect::HereDocument(fd, IoHereDocument { requires_expansion, here_end, doc, remove_tabs })`. `requires_expansion` is false for quoted delimiters; `doc` is the raw body. Here-strings: `IoRedirect::HereString(fd, Word)`, with a raw word.
+- **Redirects**: `IoRedirect::File(Option<fd>, kind, target)` with `IoFileRedirectKind` (`Read`, `Write`, `Append`, `ReadAndWrite`, `Clobber`, `DuplicateInput`, `DuplicateOutput`) and a target of `Filename(Word)`, `Fd`, `Duplicate(Word)` (e.g. `1` or `-`) or `ProcessSubstitution`. `&>` / `&>>` is `OutputAndError(Word, append)`.
+- **Assignments**: `CommandPrefixOrSuffixItem::AssignmentWord(Assignment { name, value: Scalar(Word) | Array(..), append, .. }, Word)`. Assignment-only segments are a `SimpleCommand` with no `word_or_name`. Treat array values as `unsupported`.
+- **Process substitutions**: a `CommandPrefixOrSuffixItem::ProcessSubstitution(kind, SubshellCommand)` already parsed into an AST, so walk it directly.
+- **`time`** is `Pipeline.timed` (not a word), so record it as a wrapper from that flag. **`!`** is `Pipeline.bang` (neutral). **`coproc`**, `[[ ]]` (`Command::ExtendedTest`), `if`, `for` and so on are distinct variants → `unsupported`.
+- **Source spans** use *character* indexes (not bytes), and redirects carry no location. For `source`, use the AST's `Display` rendering of the simple command rather than slicing the input.
+- **Parse errors** come back as `Err` (e.g. unterminated quote), not panics. Treat any panic as impossible but unproven: `analyse` doesn't catch panics, and fuzzing is out of scope.
+- `PipelineOperator` doesn't implement `Debug` (cosmetic).
+
+Extglob is left **on** (the default): `@(a|b)` parses as text containing glob characters, which the glob check turns into `expansion`.
+
+Not done in the spike: zsh/bash comparison from the terminal. Claude Code's built-in `rm` safety check blocked an inline `zsh -c` script (a false positive, since the script has no `rm`). The differential tests in step 2 spawn the shells from Rust instead.

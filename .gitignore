@@ -1,3 +1,4 @@
 debug/
 target/
 /.vscode
+/tests/fixtures/shell/*.local.*
