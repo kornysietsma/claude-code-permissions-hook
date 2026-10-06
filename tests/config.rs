@@ -1,5 +1,6 @@
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;
+use tool_gate_hook::Agent;
 use tool_gate_hook::config::{AuditConfig, AuditLevel, Config};
 use tool_gate_hook::policy::{Decision, FieldMatcher};
 
@@ -12,7 +13,7 @@ level = "all"
 shell_chain = ';|&&|\|'
 
 [[rule]]
-decision = "allow"
+decision = "ask"
 tool = "Bash"
 description = "safe cargo"
 match."tool_input.command" = { regex = '^cargo (build|test)\b', not_regex = ["@shell_chain", '\$\('] }
@@ -30,13 +31,13 @@ tool = "Agent"
 fn error_text(toml: &str) -> String {
     format!(
         "{:#}",
-        Config::from_toml(toml).expect_err("config should be invalid")
+        Config::from_toml(toml, Agent::Claude).expect_err("config should be invalid")
     )
 }
 
 #[test]
 fn valid_config_compiles_rules_in_file_order() {
-    let config = Config::from_toml(VALID).unwrap();
+    let config = Config::from_toml(VALID, Agent::Claude).unwrap();
 
     assert_eq!(
         config.audit,
@@ -54,11 +55,7 @@ fn valid_config_compiles_rules_in_file_order() {
             .iter()
             .map(|r| (r.index, r.decision))
             .collect::<Vec<_>>(),
-        vec![
-            (1, Decision::Allow),
-            (2, Decision::Deny),
-            (3, Decision::Ask)
-        ]
+        vec![(1, Decision::Ask), (2, Decision::Deny), (3, Decision::Ask)]
     );
     assert_eq!(rules[0].description.as_deref(), Some("safe cargo"));
     assert_eq!(rules[1].reason.as_deref(), Some("no secrets"));
@@ -78,7 +75,7 @@ fn valid_config_compiles_rules_in_file_order() {
 
 #[test]
 fn tool_regex_is_anchored() {
-    let config = Config::from_toml(VALID).unwrap();
+    let config = Config::from_toml(VALID, Agent::Claude).unwrap();
     let tool = config.policy.rules[0].tool.as_ref().unwrap();
 
     assert!(tool.is_match("Bash"));
@@ -87,9 +84,9 @@ fn tool_regex_is_anchored() {
 
 #[test]
 fn audit_section_is_optional_and_defaults_apply() {
-    assert_eq!(Config::from_toml("").unwrap().audit, None);
+    assert_eq!(Config::from_toml("", Agent::Claude).unwrap().audit, None);
 
-    let config = Config::from_toml("[audit]\nfile = \"/tmp/a.jsonl\"").unwrap();
+    let config = Config::from_toml("[audit]\nfile = \"/tmp/a.jsonl\"", Agent::Claude).unwrap();
     assert_eq!(
         config.audit,
         Some(AuditConfig {
@@ -105,9 +102,9 @@ fn unknown_pattern_names_the_rule_and_pattern() {
     let error = error_text(
         r#"
 [[rule]]
-decision = "allow"
+decision = "deny"
 [[rule]]
-decision = "allow"
+decision = "deny"
 description = "rm temp"
 match."tool_input.command" = { not_regex = "@shell_chian" }
 "#,

@@ -5,6 +5,7 @@ pub mod auditing;
 pub mod config;
 mod paths;
 pub mod policy;
+pub mod shell;
 pub mod validate;
 
 pub use agent::Agent;
@@ -59,7 +60,7 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
         Ok(parsed) => parsed,
         Err(e) => {
             // The config is loaded quietly, only to find where to record the problem
-            let audit = Config::load(config_path)
+            let audit = Config::load(config_path, agent)
                 .ok()
                 .and_then(|config| config.audit)
                 .and_then(|audit| {
@@ -74,7 +75,7 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
         }
     };
 
-    match Config::load(config_path) {
+    match Config::load(config_path, agent) {
         Ok(config) => {
             let evaluation = config.policy.evaluate(&payload, &call, context);
             let audit = config.audit.and_then(|audit| {

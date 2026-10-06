@@ -1,15 +1,14 @@
 # Illustrative example: a tightly scoped workflow for generating Mermaid diagrams.
 # Everything the workflow needs is allowed; anything else falls through to the
-# normal permission prompt. Command rules exclude shell chaining and ".." so an
-# allowed command prefix can't be used to run something else.
+# normal permission prompt. Bash commands are checked segment by segment, so a chained
+# command is allowed only if every part is; the ".." exclusion stops an allowed path
+# prefix being escaped.
 
 [audit]
 file = "/tmp/tool-gate-hook-mermaid.jsonl"
 level = "all"
 
 [patterns]
-# Anything that chains or substitutes another command: ; | ` && & (but not 2>&1) $(
-shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
 # Any ".." path segment
 parent_dir = '\.\.'
 
@@ -19,11 +18,10 @@ tool = "Read"
 description = "the mermaid prompt file"
 match."tool_input.file_path" = { equals = "/Users/korny/Dropbox/prj/ai/prompts/mermaid.md" }
 
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
 description = "npx mermaid-cli mmdc"
-match."tool_input.command" = { regex = '^npx -p @mermaid-js/mermaid-cli(@latest)? mmdc ', not_regex = "@shell_chain" }
+match.text = { regex = '^npx -p @mermaid-js/mermaid-cli(@latest)? mmdc ' }
 
 # `under` resolves symlinks and ".." for us, so no parent_dir exclusion is needed for paths
 [[rule]]
@@ -32,26 +30,17 @@ tool = "Read|Write"
 description = "files under /tmp/mermaid"
 match."tool_input.file_path" = { under = ["/tmp/mermaid"] }
 
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
 description = "rm mermaid test files"
-match."tool_input.command" = { regex = '^rm (-f )?/tmp/mermaid', not_regex = ["@shell_chain", "@parent_dir"] }
+match.text = { regex = '^rm (-f )?/tmp/mermaid', not_regex = "@parent_dir" }
 
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
 description = "download into /tmp/mermaid-download"
-match."tool_input.command" = { regex = '^curl -s -L -o /tmp/mermaid-download', not_regex = ["@shell_chain", "@parent_dir"] }
+match.text = { regex = '^curl -s -L -o /tmp/mermaid-download', not_regex = "@parent_dir" }
 
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
-description = "unique name for a scratch file"
-match."tool_input.command" = { regex = '^echo \$\$-\$RANDOM$' }
-
-[[rule]]
-decision = "allow"
-tool = "Bash"
 description = "mv a downloaded file"
-match."tool_input.command" = { regex = '^mv /tmp/mermaid-download', not_regex = ["@shell_chain", "@parent_dir"] }
+match.text = { regex = '^mv /tmp/mermaid-download', not_regex = "@parent_dir" }

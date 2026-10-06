@@ -18,6 +18,20 @@ impl Agent {
         }
     }
 
+    /// The tool that runs shell commands, and where its payload holds the command
+    pub fn shell_tool(self) -> ShellTool {
+        match self {
+            Agent::Claude => ShellTool {
+                name: "Bash",
+                command_path: "tool_input.command",
+            },
+            Agent::Copilot => ShellTool {
+                name: "bash",
+                command_path: "toolArgs.command",
+            },
+        }
+    }
+
     pub fn default_config_path(self, home: &Path) -> PathBuf {
         home.join(".config")
             .join("tool-gate-hook")
@@ -92,6 +106,12 @@ impl Agent {
             }),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellTool {
+    pub name: &'static str,
+    pub command_path: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

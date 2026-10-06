@@ -134,7 +134,7 @@ fn audited_config(dir: &Path, audit_file: &Path) -> std::path::PathBuf {
     std::fs::write(
         &config,
         format!(
-            "[audit]\nfile = '{}'\nlevel = \"all\"\n\n[[rule]]\ndecision = \"allow\"\ntool = \"Bash\"\n",
+            "[audit]\nfile = '{}'\nlevel = \"all\"\n\n[[command_rule]]\ndecision = \"allow\"\nmatch.name = {{ equals = \"ls\" }}\n",
             audit_file.display()
         ),
     )
@@ -208,9 +208,9 @@ parent_dir = '\.\.'
 
 [[rule]]
 decision = "allow"
-description = "cargo"
-tool = "Bash"
-match."tool_input.command" = { regex = '^cargo ', not_regex = "@shell_chain" }
+description = "notes"
+tool = "Read"
+match."tool_input.file_path" = { regex = '\.md$', not_regex = "@parent_dir" }
 
 [[rule]]
 decision = "deny"
@@ -295,8 +295,7 @@ fn validate_warns_about_field_paths_unknown_to_the_agent_without_failing() {
 
     assert_eq!(output.status.code(), Some(0));
     let warnings = stderr(&output);
-    assert!(warnings.contains("rule #1 (cargo)"), "{warnings}");
-    assert!(warnings.contains("tool_input.command"), "{warnings}");
+    assert!(warnings.contains("rule #1 (notes)"), "{warnings}");
     assert!(warnings.contains("rule #2"), "{warnings}");
     assert!(warnings.contains("tool_input.file_path"), "{warnings}");
     assert!(!warnings.contains("outside cwd"), "{warnings}");

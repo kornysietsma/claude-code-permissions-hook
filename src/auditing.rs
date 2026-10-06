@@ -30,7 +30,8 @@ pub struct AuditRecord {
 #[derive(Debug, PartialEq, Serialize)]
 struct DecidedBy {
     kind: RuleKind,
-    index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 }
@@ -38,10 +39,13 @@ struct DecidedBy {
 #[derive(Debug, PartialEq, Serialize)]
 struct MatchedRule {
     kind: RuleKind,
-    index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<usize>,
     decision: Decision,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    segment: Option<usize>,
 }
 
 impl From<&Match> for DecidedBy {
@@ -61,6 +65,7 @@ impl From<&Match> for MatchedRule {
             index: m.index,
             decision: m.decision,
             description: m.description.clone(),
+            segment: m.segment,
         }
     }
 }

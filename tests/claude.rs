@@ -49,11 +49,11 @@ fn allow_output_is_the_claude_hook_shape() {
         r#"
 [[rule]]
 decision = "allow"
-tool = "Bash"
-reason = "cargo is fine"
-match."tool_input.command" = { regex = '^cargo ' }
+tool = "Read"
+reason = "reading is fine"
+match."tool_input.file_path" = { regex = '\.rs$' }
 "#,
-        &fixture("bash"),
+        &fixture("read"),
     );
 
     assert_eq!(
@@ -62,7 +62,7 @@ match."tool_input.command" = { regex = '^cargo ' }
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
-                "permissionDecisionReason": "cargo is fine"
+                "permissionDecisionReason": "reading is fine"
             },
             "suppressOutput": true
         }))
@@ -131,18 +131,19 @@ decision = "deny"
 tool = "Write"
 [[rule]]
 decision = "allow"
-tool = "Bash"
+tool = "Read"
 [[rule]]
 decision = "ask"
 [[rule]]
 decision = "deny"
-match."tool_input.command" = { regex = 'test' }
+match."tool_input.file_path" = { regex = 'main' }
 "#,
+        Agent::Claude,
     )
     .unwrap();
-    let payload: Value = serde_json::from_str(&fixture("bash")).unwrap();
+    let payload: Value = serde_json::from_str(&fixture("read")).unwrap();
     let call = ToolCall {
-        tool_name: "Bash".into(),
+        tool_name: "Read".into(),
         cwd: PathBuf::from("/"),
     };
     let evaluation = config.policy.evaluate(&payload, &call, &no_home());
@@ -153,33 +154,33 @@ match."tool_input.command" = { regex = 'test' }
             .iter()
             .map(|r| r.index)
             .collect::<Vec<_>>(),
-        vec![2, 3, 4]
+        vec![Some(2), Some(3), Some(4)]
     );
-    assert_eq!(evaluation.decided_by().map(|r| r.index), Some(4));
+    assert_eq!(evaluation.decided_by().and_then(|r| r.index), Some(4));
 }
 
 #[test]
 fn not_regex_exclusion_passes_through_rather_than_denying() {
     let config = r#"
 [patterns]
-shell_chain = ';|&&|\|'
+parent_dir = '\.\.'
 
 [[rule]]
 decision = "allow"
-tool = "Bash"
-match."tool_input.command" = { regex = '^cargo ', not_regex = ["@shell_chain", '\$\('] }
+tool = "Read"
+match."tool_input.file_path" = { regex = '\.rs$', not_regex = ["@parent_dir", 'secret'] }
 "#;
 
     assert_eq!(
-        decision(&run_claude(config, &fixture("bash"))),
+        decision(&run_claude(config, &fixture("read"))),
         Some("allow")
     );
-    let chained = with_field(
-        "bash",
-        &["tool_input", "command"],
-        json!("cargo test && rm -rf /"),
+    let escaping = with_field(
+        "read",
+        &["tool_input", "file_path"],
+        json!("/Users/someone/prj/demo/../other/main.rs"),
     );
-    assert_eq!(run_claude(config, &chained), None);
+    assert_eq!(run_claude(config, &escaping), None);
 }
 
 #[test]
@@ -219,14 +220,14 @@ fn tool_name_must_match_completely() {
 fn all_match_entries_must_pass() {
     let config = r#"
 [[rule]]
-decision = "allow"
+decision = "ask"
 match."tool_input.command" = { regex = '^cargo ' }
 match."permission_mode" = { regex = '^acceptEdits$' }
 "#;
 
     assert_eq!(run_claude(config, &fixture("bash")), None);
     let accept_edits = with_field("bash", &["permission_mode"], json!("acceptEdits"));
-    assert_eq!(decision(&run_claude(config, &accept_edits)), Some("allow"));
+    assert_eq!(decision(&run_claude(config, &accept_edits)), Some("ask"));
 }
 
 #[test]
@@ -343,7 +344,10 @@ fn copilot_payload_passes_through_with_a_warning_even_if_config_is_broken() {
 
 #[test]
 fn successful_decisions_have_no_warnings() {
-    let outcome = run_claude_outcome("[[rule]]\ndecision = \"allow\"", &fixture("read"));
+    let outcome = run_claude_outcome(
+        "[[rule]]\ndecision = \"allow\"\ntool = \"Read\"",
+        &fixture("read"),
+    );
 
     assert_eq!(decision(&outcome.output), Some("allow"));
     assert!(outcome.warnings.is_empty());
@@ -354,6 +358,7 @@ fn equals_matches_the_whole_value_only() {
     let config = r#"
 [[rule]]
 decision = "allow"
+tool = "Agent"
 match."tool_input.subagent_type" = { equals = "Explore" }
 "#;
 
@@ -393,6 +398,7 @@ fn glob_matches_paths_and_star_does_not_cross_directories() {
     let config = r#"
 [[rule]]
 decision = "allow"
+tool = "Read"
 match."tool_input.file_path" = { glob = "/Users/someone/prj/*/src/*.rs" }
 "#;
 
@@ -410,6 +416,7 @@ match."tool_input.file_path" = { glob = "/Users/someone/prj/*/src/*.rs" }
     let double_star = r#"
 [[rule]]
 decision = "allow"
+tool = "Read"
 match."tool_input.file_path" = { glob = "**/*.rs" }
 "#;
     assert_eq!(decision(&run_claude(double_star, &nested)), Some("allow"));
@@ -420,6 +427,7 @@ fn several_matchers_on_one_field_must_all_pass() {
     let config = r#"
 [[rule]]
 decision = "allow"
+tool = "Read"
 match."tool_input.file_path" = { glob = "**/*.rs", not_regex = '/deep/' }
 "#;
 
@@ -440,6 +448,7 @@ fn invalid_glob_is_a_config_error() {
     let config = r#"
 [[rule]]
 decision = "allow"
+tool = "Read"
 match."tool_input.file_path" = { glob = "src/[unclosed" }
 "#;
     let output = run_claude(config, &fixture("read"));
@@ -486,7 +495,7 @@ fn run_under(paths: &PathFixture, under: &str, file_path: &str) -> Option<String
     let config_path = dir.path().join("claude.toml");
     fs::write(
         &config_path,
-        format!("[[rule]]\ndecision = \"allow\"\nmatch.\"tool_input.file_path\" = {{ under = [{under}] }}"),
+        format!("[[rule]]\ndecision = \"allow\"\ntool = \"Read\"\nmatch.\"tool_input.file_path\" = {{ under = [{under}] }}"),
     )
     .unwrap();
     let context = Context::new(paths.home.clone());

@@ -7,35 +7,27 @@
 # `command`, view and create have `path`, glob and rg have `paths` (a directory string).
 # File changes depend on the model: `create` (path, file_text) or `apply_patch`, whose
 # `toolArgs` is the patch text itself (a string, so no field path); cover both.
+#
+# bash commands are parsed into segments (simple commands): `cargo build 2>&1 && cargo test`
+# is two segments. [[command_rule]]s match each segment's `text` (the command and its
+# arguments, unquoted, without redirects) or `name`; a bash call is allowed only when every
+# segment is allowed. Anything tool-gate-hook can't check statically (variables, globs,
+# substitutions, control structures, ...) asks.
 
 [audit]
 file = "/tmp/tool-gate-hook-copilot.jsonl"
 level = "matched"      # off | matched | all
 max_value_len = 1024   # truncate long strings in the log; 0 = never truncate
 
-[patterns]
-# Anything that chains or substitutes another command: ; | ` && & (but not 2>&1) $(
-# Use as `not_regex = "@shell_chain"` so an allow rule never matches a chained command.
-shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
-# Any ".." path segment; stops an allowed prefix being escaped by navigating upwards
-parent_dir = '\.\.'
-# python, pip, pipenv, virtualenv or pyenv as the command itself: at the start, after a
-# separator (; | & newline ( ) ` $( ), and after any VAR=value prefixes, with an optional path.
-# `uv run python` doesn't match because python isn't in command position.
-# Quoting isn't understood, so a heredoc or commit message line starting `pip ...` is denied too.
-legacy_python = '(^|[;&|\n(`)])\s*([A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(\S*/)?(python(\d+(\.\d+)?)?|pip\d*|pipenv|virtualenv|pyenv)([\s;&|)`]|$)'
-
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "bash"
 description = "cargo workflow"
-match."toolArgs.command" = { regex = '^cargo (build|test|check|clippy|fmt|run)\b', not_regex = "@shell_chain" }
+match.text = { regex = '^cargo (build|test|check|clippy|fmt|run)\b' }
 
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "bash"
 description = "read-only git"
-match."toolArgs.command" = { regex = '^git (status|diff|log|show)\b', not_regex = "@shell_chain" }
+match.text = { regex = '^git (status|diff|log|show)\b' }
 
 [[rule]]
 decision = "allow"
@@ -49,22 +41,26 @@ tool = "glob|rg"
 description = "searches inside the project"
 match."toolArgs.paths" = { under = ["{cwd}"] }
 
-[[rule]]
+[[command_rule]]
 decision = "ask"
-tool = "bash"
 description = "git push"
-match."toolArgs.command" = { regex = '^git push\b' }
+match.text = { regex = '^git push\b' }
 
-[[rule]]
+[[command_rule]]
+decision = "ask"
+description = "sudo"
+match.name = { equals = "sudo" }
+
+[[command_rule]]
 decision = "deny"
-tool = "bash"
 description = "recursive force-delete"
 reason = "Recursive force-delete is not allowed"
-match."toolArgs.command" = { regex = '^rm .*-rf' }
+match.text = { regex = '^rm .*-rf' }
 
-[[rule]]
+# Matches the command itself, wherever it runs in a chain, but not quoted text such as a
+# heredoc or commit message that mentions pip
+[[command_rule]]
 decision = "deny"
-tool = "bash"
 description = "legacy Python tooling"
 reason = """
 Blocked legacy Python tooling. This environment uses uv exclusively. Use instead:
@@ -74,7 +70,7 @@ Blocked legacy Python tooling. This environment uses uv exclusively. Use instead
   uv pip install <pkg>      (if you really need pip semantics)
   uv venv                   (not python -m venv / virtualenv)
 For standalone scripts, use a PEP 723 `uv run --script` shebang."""
-match."toolArgs.command" = { regex = "@legacy_python" }
+match.name = { regex = '(^|/)(python[0-9.]*|pip[0-9]*|pipenv|virtualenv|pyenv)$' }
 
 [[rule]]
 decision = "deny"

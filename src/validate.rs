@@ -1,6 +1,6 @@
 use crate::agent::Agent;
 use crate::config::Config;
-use crate::policy::{Decision, Policy};
+use crate::policy::{Decision, Policy, Rule};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Validation {
@@ -18,13 +18,15 @@ pub fn validate(agent: Agent, config: &Config) -> Validation {
 }
 
 fn summary(config: &Config) -> String {
-    let count = |decision| {
-        config
-            .policy
-            .rules
-            .iter()
-            .filter(|rule| rule.decision == decision)
-            .count()
+    let counts = |rules: &[Rule], kind: &str| {
+        let count = |decision| rules.iter().filter(|r| r.decision == decision).count();
+        format!(
+            "{} {kind} (allow {}, ask {}, deny {})",
+            rules.len(),
+            count(Decision::Allow),
+            count(Decision::Ask),
+            count(Decision::Deny),
+        )
     };
     let patterns = if config.pattern_names.is_empty() {
         "none".to_owned()
@@ -41,11 +43,9 @@ fn summary(config: &Config) -> String {
         ),
     };
     format!(
-        "{} rules (allow {}, ask {}, deny {})\npatterns: {patterns}\naudit: {audit}",
-        config.policy.rules.len(),
-        count(Decision::Allow),
-        count(Decision::Ask),
-        count(Decision::Deny),
+        "{}\n{}\npatterns: {patterns}\naudit: {audit}",
+        counts(&config.policy.rules, "rules"),
+        counts(&config.policy.command_rules, "command rules"),
     )
 }
 

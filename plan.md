@@ -98,19 +98,19 @@ pub struct ShellEvaluation { analysis: Analysis, segment_decisions: Vec<SegmentD
 
 The smallest useful thing: `cargo build 2>&1 && cargo test` is allowed by command rules.
 
-- [ ] Refactor, with no behaviour change, first and committed separately:
+- [x] Refactor, with no behaviour change, first and committed separately:
   - `Evaluation` owns `Match` values with a `RuleKind`;
   - `FieldCondition::matches(value, cwd, home)`;
   - audit references gain `"kind": "rule"`. Update the audit tests.
-- [ ] `Agent::shell_tool()`.
-- [ ] `shell::analyse` for lists, pipelines, subshells, brace groups and simple commands with static words; redirects recorded. The `ParseError` and `Unsupported` floors. Any non-static word is `Unsupported` for now; step 4 refines it to `Expansion` and `DynamicCommand`. Static means literal pieces only (with `EscapeSequence` and `$'…'` decoded as in the Findings), **and** no unquoted `Text` containing `$`, glob or brace characters, or starting with `=`. The `$` check is a security fix from the spike (zsh `${(f)x}`), so it's needed from the first slice.
-- [ ] `text` re-quoting: plain if `[A-Za-z0-9_@%+=:,./-]+`, else single-quoted with `'\''`.
-- [ ] Config: `[[command_rule]]` (decision, description, reason, match), with an error for a command rule with no conditions. An error for an allow `[[rule]]` that can match the shell tool (`tool` omitted, or its regex matches the shell tool name).
-- [ ] Policy: for shell-tool calls, run the analysis, evaluate command rules per segment, and combine. Floors become `Match`es of kind `Floor`. The reason gets ` — in "<text>"` or ` — <construct description> in "<source>"`.
-- [ ] Missing or non-string command field → `Unsupported`.
-- [ ] Migrate the tests that use Bash allow `[[rule]]`s (`tests/claude.rs`, `tests/copilot.rs`, `tests/smoke.rs`, `tests/examples.rs`) to command rules.
-- [ ] Migrate `examples/*.toml`: shell allows become command rules on `text`. Remove `@shell_chain`, keep `@parent_dir` where still needed until step 7. `legacy_python` becomes a deny command rule on `name`. Add the harmless-builtins allow and the `sudo` ask. Run `validate` on each.
-- [ ] Differential tests (`tests/shell_differential.rs`) for static simple commands.
+- [x] `Agent::shell_tool()`.
+- [x] `shell::analyse` for lists, pipelines, subshells, brace groups and simple commands with static words; redirects recorded. The `ParseError` and `Unsupported` floors. Any non-static word is `Unsupported` for now; step 4 refines it to `Expansion` and `DynamicCommand`. Static means literal pieces only (with `EscapeSequence` and `$'…'` decoded as in the Findings), **and** no unquoted `Text` containing `$`, glob or brace characters, or starting with `=`. The `$` check is a security fix from the spike (zsh `${(f)x}`), so it's needed from the first slice.
+- [x] `text` re-quoting: plain if `[A-Za-z0-9_@%+=:,./-]+`, else single-quoted with `'\''`.
+- [x] Config: `[[command_rule]]` (decision, description, reason, match), with an error for a command rule with no conditions. An error for an allow `[[rule]]` that can match the shell tool (`tool` omitted, or its regex matches the shell tool name).
+- [x] Policy: for shell-tool calls, run the analysis, evaluate command rules per segment, and combine. Floors become `Match`es of kind `Floor`. The reason gets ` — in "<text>"` or ` — <construct description> in "<source>"`.
+- [x] Missing or non-string command field → `Unsupported`.
+- [x] Migrate the tests that use Bash allow `[[rule]]`s (`tests/claude.rs`, `tests/copilot.rs`, `tests/smoke.rs`, `tests/examples.rs`) to command rules.
+- [x] Migrate `examples/*.toml`: shell allows become command rules on `text`. Remove `@shell_chain`, keep `@parent_dir` where still needed until step 7. `legacy_python` becomes a deny command rule on `name`. Add the `sudo` ask; the harmless-builtins allow moves to step 8 (see Findings). Run `validate` on each.
+- [x] Differential tests (`tests/shell_differential.rs`) for static simple commands.
 
 **Automated:** unit tests for re-quoting and static word values. Acceptance tests:
 - `cargo build 2>&1 && cargo test` → allow;
@@ -151,7 +151,8 @@ Built early so every later step can be checked by hand.
 - `echo {a,b}` → ask; `$CMD x` → ask (`dynamic_command`); `=python3 x` → ask;
 - `cat <<EOF` with `$(curl x)` → ask, and deny with a curl deny rule; `cat <<'EOF'` with the same body → allowed by a `cat` rule;
 - `echo "$HOME"` → ask; `echo '$HOME'` → allowed by an `echo` rule;
-- a zsh/bash disagreement table in the differential tests, asserting a floor.
+- a zsh/bash disagreement table in the differential tests, asserting a floor (started in step 2 as `DISAGREED`);
+- tighten `legacy_python_inside_substitutions_is_not_allowed` in `tests/examples.rs` to **deny** (`echo $(python -V)`, backticks), now that substitutions are recursed.
 
 **Manual:** `explain` a few real messy commands from the corpus; run the ignored corpus test and skim the floor counts.
 
@@ -208,7 +209,7 @@ Built early so every later step can be checked by hand.
 
 - [ ] Config: `[[construct_rule]]` with `decision`, `construct`, `description`, `reason`, and `outside` (only for `redirect_write`). Errors: allow, an unknown construct, a floor name, `outside` on another construct.
 - [ ] Evaluation: a construct rule matches if any recorded construct of its kind is present (for `redirect_write` with `outside`, only targets not under those directories, resolved against the segment's effective directory).
-- [ ] Examples: ask on `background`; ask on `redirect_write` outside `{cwd}` and `/tmp`.
+- [ ] Examples: ask on `background`; ask on `redirect_write` outside `{cwd}` and `/tmp`. Add the harmless-builtins allow (`true`, `false`, `:`, `echo`, `printf`, `test`, `[`) now that writes are checked, with a test that `echo x > ~/.zshrc` asks.
 
 **Automated:**
 - `cargo test > /tmp/out.txt` → allow; `cargo test > ~/out.txt` → ask; `cargo test > out.txt` → allow;
@@ -291,3 +292,17 @@ What the parser gives:
 Extglob is left **on** (the default): `@(a|b)` parses as text containing glob characters, which the glob check turns into `expansion`.
 
 Not done in the spike: zsh/bash comparison from the terminal. Claude Code's built-in `rm` safety check blocked an inline `zsh -c` script (a false positive, since the script has no `rm`). The differential tests in step 2 spawn the shells from Rust instead.
+
+### Step 2: first end-to-end slice (2026-10-06)
+
+- **Code shape**: `src/shell/mod.rs` (walker, `Segment`, `Construct`, `Analysis`) and `src/shell/words.rs` (static word values, `$'…'` decoding, re-quoting). `Config::load` / `from_toml` now take the `Agent`, because the shell-allow check needs the shell tool name. `Policy` holds `command_rules` and the `shell_tool`. A `Match` has `index: Option<usize>` (none for floors) and `segment: Option<usize>` (1-based). A floor's `description` is its construct name.
+- **Matches are ordered**: `[[rule]]` matches, then floors, then command rules per segment. So in audit records, rule matches now come before command rule matches.
+- **Temporary `Unsupported` cases** (later steps refine them): non-static words (step 4), prefix assignments and assignment-only or redirect-only commands (step 5), process substitutions and heredocs with an unquoted delimiter (step 4). Suffix `NAME=value` words (e.g. `export X=1`) are plain args for now; step 5 checks them with `env_assign`.
+- **Redirects on a `( … )` or `{ …; }` group** are copied onto every segment inside it.
+- **The harmless-builtins allow is deferred to step 8.** Allowing `echo` before redirect writes are checked would let `echo x > ~/.zshrc` through. (`cargo test > /etc/x` is allowed by the cargo rule today, as it was by the old regex rule; step 8 fixes both.)
+- **The mermaid example lost its `echo $$-$RANDOM` rule**: `$` expansion is a floor, so it can never be allowed. The test now asserts it asks.
+- **`validate`** already shows a `command rules` count line; step 9 does the rest.
+- **Differential tests** pass against `/bin/zsh -f` and `/bin/bash` 3.2 for 16 tricky commands. The four `DISAGREED` words (`=ls`, `*.rs`, `{a,b}`, `${(f)x}`) hit floors.
+- **Local corpus**: 119 of 162 commands hit no floor. The 43 that do are globs (`docs/*.md`), shell variables, `for` loops, `S=…` assignments, and `echo ====` (which zsh really does reject as `=` expansion).
+- **Tooling gotcha**: something between the agent and the file turned a backslash-u unicode escape sequence in test source into the literal character. Build such strings at runtime (`format!("$'{}u00e9'", '\\')`).
+- **Dogfooding gotcha**: the live (old) hook denies any Bash command whose heredoc text has a line starting with a Python tool name, which includes writing these example configs through `cat <<EOF`. Use the file tools for such content until step 11.

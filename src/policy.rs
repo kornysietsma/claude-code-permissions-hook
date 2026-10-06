@@ -1,6 +1,7 @@
 use crate::Context;
-use crate::agent::ToolCall;
+use crate::agent::{ShellTool, ToolCall};
 use crate::paths;
+use crate::shell::{self, Analysis, Construct};
 use globset::GlobMatcher;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,8 @@ pub enum Decision {
 #[derive(Debug)]
 pub struct Policy {
     pub rules: Vec<Rule>,
+    pub command_rules: Vec<Rule>,
+    pub shell_tool: ShellTool,
 }
 
 /// Which kind of rule (or built-in check) produced a match
@@ -26,12 +29,17 @@ pub struct Policy {
 #[serde(rename_all = "snake_case")]
 pub enum RuleKind {
     Rule,
+    CommandRule,
+    /// A built-in check that can't be configured away
+    Floor,
 }
 
 impl RuleKind {
     pub fn as_str(self) -> &'static str {
         match self {
             RuleKind::Rule => "rule",
+            RuleKind::CommandRule => "command_rule",
+            RuleKind::Floor => "floor",
         }
     }
 }
@@ -71,11 +79,15 @@ pub enum FieldMatcher {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
     pub kind: RuleKind,
-    pub index: usize,
+    /// The rule's position among its kind; `None` for floors
+    pub index: Option<usize>,
     pub decision: Decision,
+    /// The rule's description, or the floor's construct name
     pub description: Option<String>,
     /// What the agent is told if this match decides the call
     pub reason: String,
+    /// 1-based index of the shell segment it applies to
+    pub segment: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -84,6 +96,15 @@ pub struct Evaluation {
     pub matches: Vec<Match>,
     /// Index into `matches` of the deciding match; `None` means passthrough
     decided_by: Option<usize>,
+    /// Present for shell tool calls
+    pub shell: Option<ShellEvaluation>,
+}
+
+#[derive(Debug)]
+pub struct ShellEvaluation {
+    pub analysis: Analysis,
+    /// Per segment: the most restrictive matching command rule's decision, if any
+    pub segment_decisions: Vec<Option<Decision>>,
 }
 
 impl Evaluation {
@@ -100,16 +121,86 @@ fn most_restrictive(matches: &[Match]) -> Option<usize> {
 
 impl Policy {
     pub fn evaluate(&self, payload: &Value, call: &ToolCall, context: &Context) -> Evaluation {
-        let matches: Vec<Match> = self
+        let mut matches: Vec<Match> = self
             .rules
             .iter()
             .filter(|rule| rule.matches_call(payload, call, context))
-            .map(Rule::to_match)
+            .map(|rule| rule.to_match(None, ""))
             .collect();
-        Evaluation {
-            decided_by: most_restrictive(&matches),
-            matches,
+        if call.tool_name != self.shell_tool.name {
+            return Evaluation {
+                decided_by: most_restrictive(&matches),
+                matches,
+                shell: None,
+            };
         }
+
+        let analysis = match lookup(payload, self.shell_tool.command_path).and_then(Value::as_str) {
+            Some(command) => shell::analyse(command, &context.home),
+            None => Analysis::unsupported("no command string in the payload"),
+        };
+        matches.extend(
+            analysis
+                .constructs
+                .iter()
+                .filter(|construct| construct.kind.is_floor())
+                .map(|construct| floor_match(construct, &analysis)),
+        );
+        let segment_decisions = analysis
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, segment)| {
+                let value = serde_json::to_value(segment).unwrap_or_default();
+                let segment_matches: Vec<Match> = self
+                    .command_rules
+                    .iter()
+                    .filter(|rule| rule.matches_value(&value, &call.cwd, context))
+                    .map(|rule| rule.to_match(Some(i + 1), &format!(" — in \"{}\"", segment.text)))
+                    .collect();
+                let decision = segment_matches.iter().map(|m| m.decision).max();
+                matches.extend(segment_matches);
+                decision
+            })
+            .collect::<Vec<_>>();
+
+        let all_allowed = !segment_decisions.is_empty()
+            && segment_decisions
+                .iter()
+                .all(|decision| *decision == Some(Decision::Allow));
+        let decided_by = if matches.iter().any(|m| m.decision > Decision::Allow) {
+            most_restrictive(&matches)
+        } else if all_allowed {
+            matches.iter().position(|m| m.decision == Decision::Allow)
+        } else {
+            None
+        };
+        Evaluation {
+            matches,
+            decided_by,
+            shell: Some(ShellEvaluation {
+                analysis,
+                segment_decisions,
+            }),
+        }
+    }
+}
+
+fn floor_match(construct: &Construct, analysis: &Analysis) -> Match {
+    let mut reason = format!("tool-gate-hook: ask — {}", construct.kind.describe());
+    if let Some(detail) = &construct.detail {
+        reason.push_str(&format!(" ({detail})"));
+    }
+    if let Some(segment) = construct.segment.and_then(|i| analysis.segments.get(i)) {
+        reason.push_str(&format!(", in \"{}\"", segment.source));
+    }
+    Match {
+        kind: RuleKind::Floor,
+        index: None,
+        decision: Decision::Ask,
+        description: Some(construct.kind.name().to_owned()),
+        reason,
+        segment: construct.segment.map(|i| i + 1),
     }
 }
 
@@ -141,13 +232,15 @@ impl Rule {
         })
     }
 
-    fn to_match(&self) -> Match {
+    /// `context` is appended to the reason, to say which shell segment matched
+    fn to_match(&self, segment: Option<usize>, context: &str) -> Match {
         Match {
             kind: self.kind,
-            index: self.index,
+            index: Some(self.index),
             decision: self.decision,
             description: self.description.clone(),
-            reason: self.reason(),
+            reason: format!("{}{context}", self.reason()),
+            segment,
         }
     }
 }

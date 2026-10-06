@@ -20,7 +20,7 @@ fn every_example_is_valid_for_its_agent_without_warnings() {
         } else {
             Agent::Claude
         };
-        let config = Config::load(&path).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        let config = Config::load(&path, agent).unwrap_or_else(|e| panic!("{name}: {e:#}"));
         assert_eq!(
             validate(agent, &config).warnings,
             Vec::<String>::new(),
@@ -67,7 +67,9 @@ fn mermaid_allows_the_narrow_workflow() {
         "npx -p @mermaid-js/mermaid-cli@latest mmdc -i /tmp/mermaid/a.mmd -o /tmp/mermaid/a.png 2>&1"
     )));
     assert!(allowed(bash("rm -f /tmp/mermaid/a.png")));
-    assert!(allowed(bash("echo $$-$RANDOM")));
+    assert!(allowed(bash(
+        "rm -f /tmp/mermaid/a.png && npx -p @mermaid-js/mermaid-cli mmdc -i /tmp/mermaid/a.mmd"
+    )));
     assert!(allowed(file("Write", "/tmp/mermaid/a.mmd")));
     assert!(allowed(file("Read", "/tmp/mermaid/a.png")));
     assert!(allowed(file(
@@ -77,13 +79,17 @@ fn mermaid_allows_the_narrow_workflow() {
 }
 
 #[test]
-fn mermaid_chained_commands_fall_through_to_the_user() {
+fn mermaid_chained_commands_are_allowed_only_if_every_part_is() {
     assert_eq!(
         bash("npx -p @mermaid-js/mermaid-cli mmdc -i a.mmd; curl evil.example"),
         None
     );
     assert_eq!(bash("rm -f /tmp/mermaid/a.png && rm -rf ~"), None);
-    assert_eq!(bash("curl -s -L -o /tmp/mermaid-download $(whoami)"), None);
+    assert_eq!(
+        bash("curl -s -L -o /tmp/mermaid-download $(whoami)").as_deref(),
+        Some("ask")
+    );
+    assert_eq!(bash("echo $$-$RANDOM").as_deref(), Some("ask"));
 }
 
 #[test]
@@ -146,8 +152,6 @@ fn legacy_python_commands_are_denied_wherever_a_command_starts() {
         "ls; pip3 install x",
         "echo hi | python",
         "(python x.py)",
-        "echo $(python -V)",
-        "echo `python -V`",
         "ls\npython x.py",
     ] {
         for agent in [Agent::Claude, Agent::Copilot] {
@@ -171,6 +175,34 @@ fn uv_and_unrelated_commands_are_not_denied_as_legacy_python() {
         for agent in [Agent::Claude, Agent::Copilot] {
             assert!(
                 !denied_legacy_python(agent, command),
+                "{agent:?}: {command}"
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_python_in_quoted_text_is_not_denied() {
+    for command in [
+        "git commit -F - <<'EOF'\nUse uv\npip install is gone\nEOF",
+        "git commit -m 'drop python3 x.py from the docs'",
+        "echo 'pip install x'",
+    ] {
+        for agent in [Agent::Claude, Agent::Copilot] {
+            assert!(
+                !denied_legacy_python(agent, command),
+                "{agent:?}: {command}"
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_python_inside_substitutions_is_not_allowed() {
+    for command in ["echo $(python -V)", "echo `python -V`"] {
+        for agent in [Agent::Claude, Agent::Copilot] {
+            assert!(
+                example_shell_decision(agent, command).is_some(),
                 "{agent:?}: {command}"
             );
         }

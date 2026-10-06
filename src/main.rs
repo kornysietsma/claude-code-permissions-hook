@@ -70,8 +70,8 @@ fn run_hook(target: &Target) -> Result<()> {
 
 fn run_validate_config(target: &Target) -> Result<()> {
     let path = target.config_path(&home()?);
-    let config =
-        Config::load(&path).with_context(|| format!("invalid config {}", path.display()))?;
+    let config = Config::load(&path, target.agent)
+        .with_context(|| format!("invalid config {}", path.display()))?;
     let validation = validate::validate(target.agent, &config);
     for warning in &validation.warnings {
         eprintln!("warning: {warning}");

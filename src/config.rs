@@ -1,3 +1,4 @@
+use crate::agent::Agent;
 use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule, RuleKind, rule_label};
 use anyhow::{Context, Result, anyhow, bail};
 use globset::GlobBuilder;
@@ -56,6 +57,8 @@ struct RawConfig {
     // Kept as tables so each rule can be parsed with its index in error messages
     #[serde(default, rename = "rule")]
     rules: Vec<toml::Table>,
+    #[serde(default, rename = "command_rule")]
+    command_rules: Vec<toml::Table>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +66,16 @@ struct RawConfig {
 struct RawRule {
     decision: Decision,
     tool: Option<String>,
+    description: Option<String>,
+    reason: Option<String>,
+    #[serde(default, rename = "match")]
+    fields: BTreeMap<String, RawFieldMatch>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCommandRule {
+    decision: Decision,
     description: Option<String>,
     reason: Option<String>,
     #[serde(default, rename = "match")]
@@ -97,25 +110,51 @@ impl OneOrMany {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(path: &Path, agent: Agent) -> Result<Self> {
         let contents = fs::read_to_string(path).context("cannot read file")?;
-        Self::from_toml(&contents)
+        Self::from_toml(&contents, agent)
     }
 
-    pub fn from_toml(contents: &str) -> Result<Self> {
+    pub fn from_toml(contents: &str, agent: Agent) -> Result<Self> {
         let raw: RawConfig = toml::from_str(contents)?;
         let patterns = compile_patterns(&raw.patterns)?;
         let pattern_names = raw.patterns.keys().cloned().collect();
+        let shell_tool = agent.shell_tool();
         let rules = raw
             .rules
             .into_iter()
             .enumerate()
-            .map(|(i, table)| compile_rule(i + 1, table, &patterns))
+            .map(|(i, table)| {
+                let rule = compile_rule(i + 1, table, &patterns)?;
+                let matches_shell = rule
+                    .tool
+                    .as_ref()
+                    .is_none_or(|tool| tool.is_match(shell_tool.name));
+                if rule.decision == Decision::Allow && matches_shell {
+                    bail!(
+                        "{}: an allow [[rule]] can't match the shell tool {}; \
+                         allow shell commands with [[command_rule]]",
+                        rule.label(),
+                        shell_tool.name
+                    );
+                }
+                Ok(rule)
+            })
+            .collect::<Result<_>>()?;
+        let command_rules = raw
+            .command_rules
+            .into_iter()
+            .enumerate()
+            .map(|(i, table)| compile_command_rule(i + 1, table, &patterns))
             .collect::<Result<_>>()?;
         Ok(Config {
             audit: raw.audit,
             pattern_names,
-            policy: Policy { rules },
+            policy: Policy {
+                rules,
+                command_rules,
+                shell_tool,
+            },
         })
     }
 }
@@ -130,33 +169,26 @@ fn compile_patterns(patterns: &BTreeMap<String, String>) -> Result<BTreeMap<&str
         .collect()
 }
 
+fn label_for(kind: RuleKind, index: usize, table: &toml::Table) -> String {
+    rule_label(
+        kind,
+        index,
+        table.get("description").and_then(|d| d.as_str()),
+    )
+}
+
 fn compile_rule(
     index: usize,
     table: toml::Table,
     patterns: &BTreeMap<&str, Regex>,
 ) -> Result<Rule> {
-    let label = rule_label(
-        RuleKind::Rule,
-        index,
-        table.get("description").and_then(|d| d.as_str()),
-    );
-
+    let label = label_for(RuleKind::Rule, index, &table);
     let raw: RawRule = table.try_into().with_context(|| label.clone())?;
     let tool = raw
         .tool
         .map(|tool| Regex::new(&format!("^(?:{tool})$")))
         .transpose()
         .with_context(|| format!("{label}: tool"))?;
-    let fields = raw
-        .fields
-        .into_iter()
-        .map(|(path, field)| {
-            let matchers = compile_field(field, patterns)
-                .with_context(|| format!("{label}: match.\"{path}\""))?;
-            Ok(FieldCondition { path, matchers })
-        })
-        .collect::<Result<_>>()?;
-
     Ok(Rule {
         kind: RuleKind::Rule,
         index,
@@ -164,8 +196,44 @@ fn compile_rule(
         tool,
         description: raw.description,
         reason: raw.reason,
-        fields,
+        fields: compile_fields(raw.fields, patterns, &label)?,
     })
+}
+
+fn compile_command_rule(
+    index: usize,
+    table: toml::Table,
+    patterns: &BTreeMap<&str, Regex>,
+) -> Result<Rule> {
+    let label = label_for(RuleKind::CommandRule, index, &table);
+    let raw: RawCommandRule = table.try_into().with_context(|| label.clone())?;
+    if raw.fields.is_empty() {
+        bail!("{label}: no match conditions, so it would match every command");
+    }
+    Ok(Rule {
+        kind: RuleKind::CommandRule,
+        index,
+        decision: raw.decision,
+        tool: None,
+        description: raw.description,
+        reason: raw.reason,
+        fields: compile_fields(raw.fields, patterns, &label)?,
+    })
+}
+
+fn compile_fields(
+    fields: BTreeMap<String, RawFieldMatch>,
+    patterns: &BTreeMap<&str, Regex>,
+    label: &str,
+) -> Result<Vec<FieldCondition>> {
+    fields
+        .into_iter()
+        .map(|(path, field)| {
+            let matchers = compile_field(field, patterns)
+                .with_context(|| format!("{label}: match.\"{path}\""))?;
+            Ok(FieldCondition { path, matchers })
+        })
+        .collect()
 }
 
 fn compile_field(

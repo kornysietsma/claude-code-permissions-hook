@@ -23,11 +23,10 @@ fn decision(output: &Option<Value>) -> Option<&str> {
 fn allow_output_is_the_flat_copilot_shape() {
     let output = run_copilot(
         r#"
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "bash"
 reason = "cargo is fine"
-match."toolArgs.command" = { regex = '^cargo ' }
+match.text = { regex = '^cargo ' }
 "#,
         &fixture("bash"),
     );
@@ -36,7 +35,7 @@ match."toolArgs.command" = { regex = '^cargo ' }
         output,
         Some(json!({
             "permissionDecision": "allow",
-            "permissionDecisionReason": "cargo is fine"
+            "permissionDecisionReason": "cargo is fine — in \"cargo test\""
         }))
     );
 }
@@ -79,10 +78,10 @@ fn every_fixture_is_parsed_and_matched_by_its_lowercase_tool_name() {
         "glob",
         "task",
     ] {
-        let config = format!("[[rule]]\ndecision = \"allow\"\ntool = \"{tool}\"");
+        let config = format!("[[rule]]\ndecision = \"ask\"\ntool = \"{tool}\"");
         assert_eq!(
             decision(&run_copilot(&config, &fixture(tool))),
-            Some("allow"),
+            Some("ask"),
             "{tool}"
         );
     }
@@ -169,10 +168,9 @@ match."toolArgs.paths" = { under = ["{cwd}"] }
 #[test]
 fn claude_agent_accepts_what_copilot_sends_to_a_claude_hook() {
     let config = r#"
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
-match."tool_input.command" = { regex = '^ls ' }
+match.text = { regex = '^ls ' }
 
 [[rule]]
 decision = "ask"

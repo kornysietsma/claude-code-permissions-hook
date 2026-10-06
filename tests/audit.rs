@@ -68,10 +68,10 @@ impl Run {
 }
 
 const ALLOW_BASH: &str = r#"
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
 description = "any bash"
+match.name = { exists = true }
 "#;
 
 #[test]
@@ -85,8 +85,10 @@ fn allow_record_has_every_field() {
             "agent": "claude",
             "config": run.config(),
             "decision": "allow",
-            "decided_by": { "kind": "rule", "index": 1, "description": "any bash" },
-            "matches": [ { "kind": "rule", "index": 1, "decision": "allow", "description": "any bash" } ],
+            "decided_by": { "kind": "command_rule", "index": 1, "description": "any bash" },
+            "matches": [
+                { "kind": "command_rule", "index": 1, "decision": "allow", "description": "any bash", "segment": 1 }
+            ],
             "payload": serde_json::from_str::<Value>(&fixture("bash")).unwrap(),
             "duration_us": 0
         }))
@@ -94,12 +96,12 @@ fn allow_record_has_every_field() {
 }
 
 #[test]
-fn deny_wins_and_all_matches_are_recorded_in_file_order() {
+fn deny_wins_and_all_matches_are_recorded_rules_first() {
     let rules = r#"
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
 description = "any bash"
+match.name = { exists = true }
 
 [[rule]]
 decision = "ask"
@@ -121,14 +123,14 @@ tool = "Read"
     assert_eq!(record["decision"], "deny");
     assert_eq!(
         record["decided_by"],
-        json!({ "kind": "rule", "index": 3, "description": "no bash" })
+        json!({ "kind": "rule", "index": 2, "description": "no bash" })
     );
     assert_eq!(
         record["matches"],
         json!([
-            { "kind": "rule", "index": 1, "decision": "allow", "description": "any bash" },
-            { "kind": "rule", "index": 2, "decision": "ask" },
-            { "kind": "rule", "index": 3, "decision": "deny", "description": "no bash" }
+            { "kind": "rule", "index": 1, "decision": "ask" },
+            { "kind": "rule", "index": 2, "decision": "deny", "description": "no bash" },
+            { "kind": "command_rule", "index": 1, "decision": "allow", "description": "any bash", "segment": 1 }
         ])
     );
 }
