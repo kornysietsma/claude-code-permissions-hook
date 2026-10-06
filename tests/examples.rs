@@ -210,3 +210,23 @@ fn legacy_python_inside_substitutions_is_denied() {
         }
     }
 }
+
+#[test]
+fn safe_env_assignments_are_allowed_and_others_ask() {
+    for agent in [Agent::Claude, Agent::Copilot] {
+        let decision = |command: &str| {
+            example_shell_decision(agent, command)
+                .map(|d| d["permissionDecision"].as_str().unwrap().to_owned())
+        };
+        assert_eq!(
+            decision("RUST_LOG=debug cargo test").as_deref(),
+            Some("allow")
+        );
+        assert_eq!(
+            decision("env NO_COLOR=1 timeout 60 cargo test").as_deref(),
+            Some("allow")
+        );
+        assert_eq!(decision("GIT_PAGER=x git log").as_deref(), Some("ask"));
+        assert_eq!(decision("PATH=./evil; cargo test").as_deref(), Some("ask"));
+    }
+}

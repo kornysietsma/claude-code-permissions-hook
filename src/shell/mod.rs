@@ -2,13 +2,16 @@
 //! constructs that need a closer look. Pure: no policy and no I/O.
 
 mod words;
+mod wrappers;
 
 use brush_parser::ast::{
-    Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList, CompoundListItem,
-    IoFileRedirectKind, IoFileRedirectTarget, IoRedirect, Pipeline, ProcessSubstitutionKind,
-    RedirectList, SeparatorOperator, SimpleCommand, SubshellCommand, Word,
+    Assignment, AssignmentName, AssignmentValue, Command, CommandPrefixOrSuffixItem,
+    CompoundCommand, CompoundList, CompoundListItem, IoFileRedirectKind, IoFileRedirectTarget,
+    IoRedirect, Pipeline, ProcessSubstitutionKind, RedirectList, SeparatorOperator, SimpleCommand,
+    SubshellCommand, Word,
 };
 use brush_parser::{Parser, ParserOptions};
+use regex::Regex;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -18,9 +21,28 @@ use words::NotStatic;
 /// Substitutions nested deeper than this are unsupported
 const MAX_DEPTH: usize = 16;
 
+/// Builtins whose `NAME=value` arguments set variables
+const DECLARATIONS: [&str; 5] = ["export", "declare", "typeset", "local", "readonly"];
+
+/// The `[shell]` config
+#[derive(Debug, Default)]
+pub struct Settings {
+    /// Variable names that may be assigned without asking
+    pub safe_env: Vec<Regex>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentKind {
+    Command,
+    /// Only assignments (`FOO=1`): needs no command rule
+    AssignmentOnly,
+}
+
 /// One simple command, as rules see it
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Segment {
+    #[serde(skip)]
+    pub kind: SegmentKind,
     /// `name` and `args`, re-quoted only where needed; what rules usually match
     pub text: String,
     pub name: String,
@@ -30,6 +52,16 @@ pub struct Segment {
     pub wrappers: Vec<String>,
     /// The command as parsed, for the audit log
     pub source: String,
+}
+
+impl Segment {
+    /// Neutral segments need no command rule, and rules never see them
+    pub fn is_neutral(&self) -> bool {
+        match self.kind {
+            SegmentKind::Command => false,
+            SegmentKind::AssignmentOnly => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -47,6 +79,7 @@ pub enum ConstructKind {
     Unsupported,
     Expansion,
     DynamicCommand,
+    EnvAssign,
     Substitution,
     Heredoc,
     Pipe,
@@ -63,6 +96,7 @@ impl ConstructKind {
             ConstructKind::Unsupported => "unsupported",
             ConstructKind::Expansion => "expansion",
             ConstructKind::DynamicCommand => "dynamic_command",
+            ConstructKind::EnvAssign => "env_assign",
             ConstructKind::Substitution => "substitution",
             ConstructKind::Heredoc => "heredoc",
             ConstructKind::Pipe => "pipe",
@@ -79,7 +113,8 @@ impl ConstructKind {
             ConstructKind::ParseError
             | ConstructKind::Unsupported
             | ConstructKind::Expansion
-            | ConstructKind::DynamicCommand => true,
+            | ConstructKind::DynamicCommand
+            | ConstructKind::EnvAssign => true,
             ConstructKind::Substitution
             | ConstructKind::Heredoc
             | ConstructKind::Pipe
@@ -96,6 +131,7 @@ impl ConstructKind {
             ConstructKind::Unsupported => "shell syntax that tool-gate-hook can't check",
             ConstructKind::Expansion => "a value only the shell can work out",
             ConstructKind::DynamicCommand => "a command name only the shell can work out",
+            ConstructKind::EnvAssign => "a variable not listed in [shell] safe_env",
             ConstructKind::Substitution => "a command substitution",
             ConstructKind::Heredoc => "a heredoc or here-string",
             ConstructKind::Pipe => "a pipe",
@@ -139,10 +175,11 @@ impl Analysis {
     }
 }
 
-pub fn analyse(command: &str, home: &Path) -> Analysis {
+pub fn analyse(command: &str, home: &Path, settings: &Settings) -> Analysis {
     let options = ParserOptions::default();
     let mut walker = Walker {
         home,
+        settings,
         options: &options,
         depth: 0,
         analysis: Analysis::default(),
@@ -168,6 +205,7 @@ enum Role {
 
 struct Walker<'a> {
     home: &'a Path,
+    settings: &'a Settings,
     options: &'a ParserOptions,
     /// How many substitutions deep the walk is
     depth: usize,
@@ -281,18 +319,23 @@ impl Walker<'_> {
     }
 
     fn simple(&mut self, simple: &SimpleCommand, inherited: &[Redirect], wrappers: &[&str]) {
-        let segment = simple
-            .word_or_name
-            .is_some()
-            .then_some(self.analysis.segments.len());
+        let prefix = simple.prefix.iter().flat_map(|prefix| prefix.0.iter());
+        let assigns = prefix
+            .clone()
+            .any(|item| matches!(item, CommandPrefixOrSuffixItem::AssignmentWord(..)));
+        let segment =
+            (simple.word_or_name.is_some() || assigns).then_some(self.analysis.segments.len());
         let mut pending = vec![];
         let name = simple
             .word_or_name
             .as_ref()
             .map(|word| self.word(word, segment, Role::Command, &mut pending));
+        let declares = name
+            .as_deref()
+            .is_some_and(|name| DECLARATIONS.contains(&name));
         let mut args = vec![];
+        let mut env = BTreeMap::new();
         let mut redirects = inherited.to_vec();
-        let prefix = simple.prefix.iter().flat_map(|prefix| prefix.0.iter());
         let suffix = simple.suffix.iter().flat_map(|suffix| suffix.0.iter());
         let items = prefix
             .map(|item| (true, item))
@@ -307,19 +350,19 @@ impl Walker<'_> {
                         redirects.push(redirect);
                     }
                 }
-                CommandPrefixOrSuffixItem::AssignmentWord(assignment, word) => {
-                    // Prefix assignments are checked from step 5; suffix ones (`export X=1`) are args
-                    if in_prefix {
-                        self.floor(
-                            ConstructKind::Unsupported,
-                            segment,
-                            format!("assignment {}", assignment.name),
-                        );
-                        let info = words::analyse(&word.value, self.home, self.options);
-                        pending.extend(info.substitutions.into_iter().map(Pending::Substitution));
-                    } else {
-                        args.push(self.word(word, segment, Role::Arg, &mut pending));
+                // brush-parser reads any `NAME=value` arg as an assignment (`make CC=gcc`)
+                CommandPrefixOrSuffixItem::AssignmentWord(assignment, word) if in_prefix => {
+                    if let Some((name, value)) =
+                        self.assignment(assignment, word, segment, &mut pending)
+                    {
+                        env.insert(name, value);
                     }
+                }
+                CommandPrefixOrSuffixItem::AssignmentWord(assignment, word) => {
+                    if declares {
+                        self.assigned_name(assignment, word, segment);
+                    }
+                    args.push(self.word(word, segment, Role::Arg, &mut pending));
                 }
                 CommandPrefixOrSuffixItem::ProcessSubstitution(kind, subshell) => {
                     let text = process_substitution_text(kind, subshell);
@@ -333,22 +376,24 @@ impl Walker<'_> {
                 }
             }
         }
+        let mut segment_value = Segment {
+            kind: SegmentKind::Command,
+            text: String::new(),
+            name: String::new(),
+            args: vec![],
+            env,
+            redirects,
+            wrappers: wrappers.iter().map(|w| (*w).to_owned()).collect(),
+            source: simple.to_string(),
+        };
         match name {
             Some(name) => {
-                let text = std::iter::once(&name)
-                    .chain(&args)
-                    .map(|word| words::quote(word))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                self.analysis.segments.push(Segment {
-                    text,
-                    name,
-                    args,
-                    env: BTreeMap::new(),
-                    redirects,
-                    wrappers: wrappers.iter().map(|w| (*w).to_owned()).collect(),
-                    source: simple.to_string(),
-                });
+                self.unwrap(&mut segment_value, name, args, segment);
+                self.analysis.segments.push(segment_value);
+            }
+            None if assigns => {
+                segment_value.kind = SegmentKind::AssignmentOnly;
+                self.analysis.segments.push(segment_value);
             }
             None => self.floor(
                 ConstructKind::Unsupported,
@@ -357,6 +402,98 @@ impl Walker<'_> {
             ),
         }
         self.walk_pending(pending, segment);
+    }
+
+    /// Fills in the command the wrappers (if any) run, and its `text`
+    fn unwrap(
+        &mut self,
+        into: &mut Segment,
+        name: String,
+        args: Vec<String>,
+        segment: Option<usize>,
+    ) {
+        let unwrapped = wrappers::unwrap(&name, &args).unwrap_or_else(|why| {
+            self.floor(ConstructKind::Unsupported, segment, why);
+            wrappers::Unwrapped {
+                name,
+                args,
+                ..wrappers::Unwrapped::default()
+            }
+        });
+        for (name, value) in unwrapped.env {
+            self.check_env_name(&name, segment);
+            into.env.insert(name, value);
+        }
+        into.wrappers.extend(unwrapped.wrappers);
+        into.text = std::iter::once(&unwrapped.name)
+            .chain(&unwrapped.args)
+            .map(|word| words::quote(word))
+            .collect::<Vec<_>>()
+            .join(" ");
+        into.name = unwrapped.name;
+        into.args = unwrapped.args;
+    }
+
+    /// A prefix assignment's name and static value (or raw value, recording why it isn't static)
+    fn assignment<'w>(
+        &mut self,
+        assignment: &'w Assignment,
+        word: &Word,
+        segment: Option<usize>,
+        pending: &mut Vec<Pending<'w>>,
+    ) -> Option<(String, String)> {
+        let name = self.assigned_name(assignment, word, segment);
+        match &assignment.value {
+            AssignmentValue::Scalar(value) => {
+                let value = self.value(&value.value, &word.value, segment, Role::Arg, pending);
+                Some((name?.to_owned(), value))
+            }
+            AssignmentValue::Array(items) => {
+                for (_, item) in items {
+                    let info = words::analyse(&item.value, self.home, self.options);
+                    pending.extend(info.substitutions.into_iter().map(Pending::Substitution));
+                }
+                None
+            }
+        }
+    }
+
+    /// Checks the name against `safe_env`; `None` for array assignments, which are unsupported
+    fn assigned_name<'n>(
+        &mut self,
+        assignment: &'n Assignment,
+        word: &Word,
+        segment: Option<usize>,
+    ) -> Option<&'n str> {
+        match (&assignment.name, &assignment.value) {
+            (AssignmentName::VariableName(name), AssignmentValue::Scalar(_)) => {
+                self.check_env_name(name, segment);
+                Some(name)
+            }
+            (AssignmentName::ArrayElementName(..), _) | (_, AssignmentValue::Array(_)) => {
+                self.floor(
+                    ConstructKind::Unsupported,
+                    segment,
+                    format!("array assignment {}", word.value),
+                );
+                None
+            }
+        }
+    }
+
+    fn check_env_name(&mut self, name: &str, segment: Option<usize>) {
+        if !self
+            .settings
+            .safe_env
+            .iter()
+            .any(|safe| safe.is_match(name))
+        {
+            self.floor(
+                ConstructKind::EnvAssign,
+                segment,
+                format!("assignment {name}"),
+            );
+        }
     }
 
     fn walk_pending(&mut self, pending: Vec<Pending<'_>>, segment: Option<usize>) {
@@ -398,7 +535,20 @@ impl Walker<'_> {
         role: Role,
         pending: &mut Vec<Pending<'w>>,
     ) -> String {
-        let info = words::analyse(&word.value, self.home, self.options);
+        self.value(&word.value, &word.value, segment, role, pending)
+    }
+
+    /// The static value of `raw`; otherwise `raw`, recording why it isn't static, as part of
+    /// `shown`
+    fn value<'w>(
+        &mut self,
+        raw: &str,
+        shown: &str,
+        segment: Option<usize>,
+        role: Role,
+        pending: &mut Vec<Pending<'w>>,
+    ) -> String {
+        let info = words::analyse(raw, self.home, self.options);
         pending.extend(info.substitutions.into_iter().map(Pending::Substitution));
         info.value.unwrap_or_else(|why| {
             let place = match role {
@@ -411,12 +561,8 @@ impl Walker<'_> {
                 (NotStatic::Expansion(_), Role::Command) => ConstructKind::DynamicCommand,
                 (NotStatic::Expansion(_), _) => ConstructKind::Expansion,
             };
-            self.floor(
-                kind,
-                segment,
-                format!("{} in {place}{}", why.why(), word.value),
-            );
-            word.value.clone()
+            self.floor(kind, segment, format!("{} in {place}{shown}", why.why()));
+            raw.to_owned()
         })
     }
 
@@ -570,7 +716,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     fn analyse_here(command: &str) -> Analysis {
-        analyse(command, Path::new("/home/me"))
+        analyse(command, Path::new("/home/me"), &Settings::default())
     }
 
     fn texts(analysis: &Analysis) -> Vec<&str> {
@@ -612,6 +758,7 @@ mod tests {
         assert_eq!(
             analysis.segments,
             vec![Segment {
+                kind: SegmentKind::Command,
                 text: "./scripts/thing.py --out 'my file.txt'".into(),
                 name: "./scripts/thing.py".into(),
                 args: vec!["--out".into(), "my file.txt".into()],
@@ -819,14 +966,109 @@ mod tests {
         }
     }
 
+    fn analyse_with_safe_env(command: &str) -> Analysis {
+        let settings = Settings {
+            safe_env: vec![Regex::new("^RUST_LOG$").unwrap()],
+        };
+        analyse(command, Path::new("/home/me"), &settings)
+    }
+
     #[test]
-    fn assignment_only_commands_are_unsupported() {
+    fn prefix_assignments_go_to_env_and_unsafe_names_are_floors() {
+        let analysis = analyse_with_safe_env("RUST_LOG=debug FOO='a b' cargo test");
+
+        assert_eq!(texts(&analysis), vec!["cargo test"]);
         assert_eq!(
-            floors(&analyse_here("FOO=1")),
+            analysis.segments[0].env,
+            BTreeMap::from([
+                ("FOO".to_owned(), "a b".to_owned()),
+                ("RUST_LOG".to_owned(), "debug".to_owned())
+            ])
+        );
+        assert_eq!(
+            floors(&analysis),
+            vec![("env_assign", Some(0), "assignment FOO")]
+        );
+    }
+
+    #[test]
+    fn assignment_values_are_classified_and_walked() {
+        let analysis = analyse_with_safe_env("RUST_LOG=$x cargo test; RUST_LOG=$(curl x)");
+
+        assert_eq!(texts(&analysis), vec!["cargo test", "", "curl x"]);
+        assert_eq!(analysis.segments[0].env["RUST_LOG"], "$x");
+        assert_eq!(
+            floors(&analysis),
             vec![
-                ("unsupported", None, "assignment FOO"),
-                ("unsupported", None, "no command word in FOO=1"),
+                ("expansion", Some(0), "variable in RUST_LOG=$x"),
+                (
+                    "expansion",
+                    Some(1),
+                    "command substitution in RUST_LOG=$(curl x)"
+                ),
             ]
+        );
+    }
+
+    #[test]
+    fn assignment_only_commands_are_neutral_segments() {
+        let analysis = analyse_with_safe_env("RUST_LOG=1 > out; > out");
+
+        assert_eq!(analysis.segments.len(), 1);
+        assert!(analysis.segments[0].is_neutral());
+        assert_eq!(analysis.segments[0].redirects[0].target, "out");
+        assert_eq!(
+            floors(&analysis),
+            vec![("unsupported", None, "no command word in > out")]
+        );
+    }
+
+    #[test]
+    fn declaration_builtins_check_their_assignment_names() {
+        for (command, expected) in [
+            ("export RUST_LOG=1 FOO=2 BAR", vec!["assignment FOO"]),
+            ("declare -x FOO=1", vec!["assignment FOO"]),
+            (
+                "typeset FOO=1; local FOO=1; readonly FOO=1",
+                vec!["assignment FOO"; 3],
+            ),
+            ("make CC=gcc", vec![]),
+            ("export A=(x y)", vec!["array assignment A=(x y)"]),
+        ] {
+            let analysis = analyse_with_safe_env(command);
+            let details: Vec<&str> = floors(&analysis).iter().map(|f| f.2).collect();
+            assert_eq!(details, expected, "{command}");
+        }
+        // The value is still an arg, so `text` shows it
+        assert_eq!(texts(&analyse_here("export FOO=1")), vec!["export FOO=1"]);
+    }
+
+    #[test]
+    fn wrappers_are_unwrapped() {
+        let analysis =
+            analyse_with_safe_env("time env RUST_LOG=debug FOO=1 timeout -s KILL 60 cargo test");
+
+        assert_eq!(analysis.segments[0].text, "cargo test");
+        assert_eq!(
+            analysis.segments[0].wrappers,
+            vec!["time", "env", "timeout"]
+        );
+        assert_eq!(analysis.segments[0].env.len(), 2);
+        assert_eq!(
+            floors(&analysis),
+            vec![("env_assign", Some(0), "assignment FOO")]
+        );
+    }
+
+    #[test]
+    fn unknown_wrapper_options_leave_the_command_wrapped() {
+        let analysis = analyse_here("timeout --bogus 60 cargo test");
+
+        assert_eq!(analysis.segments[0].name, "timeout");
+        assert_eq!(analysis.segments[0].wrappers, Vec::<String>::new());
+        assert_eq!(
+            floors(&analysis),
+            vec![("unsupported", Some(0), "timeout option --bogus")]
         );
     }
 
@@ -834,7 +1076,7 @@ mod tests {
     fn other_unchecked_constructs_are_unsupported() {
         let unicode = format!("$'{}u00e9'", '\\');
         for (command, detail) in [
-            ("FOO=1 cargo test".to_owned(), "assignment FOO".to_owned()),
+            ("A[1]=x ls".to_owned(), "array assignment A[1]=x".to_owned()),
             (
                 format!("echo {unicode}"),
                 format!("unsupported $'…' escape in {unicode}"),

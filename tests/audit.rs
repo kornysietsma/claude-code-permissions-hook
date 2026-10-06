@@ -172,6 +172,23 @@ match.text = { regex = '^git push\b' }
 }
 
 #[test]
+fn assignment_only_segments_are_neutral() {
+    let rules = "[shell]\nsafe_env = ['^CI$']\n";
+    let record = run_claude("all", rules, &bash_with_command("CI=1"))
+        .record()
+        .unwrap();
+
+    assert_eq!(
+        record["shell"]["segments"],
+        json!([{
+            "text": "", "name": "", "args": [], "env": { "CI": "1" }, "redirects": [],
+            "wrappers": [], "source": "CI=1", "matches": [], "decision": "neutral"
+        }])
+    );
+    assert_eq!(record["decision"], "passthrough");
+}
+
+#[test]
 fn constructs_without_a_segment_leave_it_out() {
     let record = run_claude("matched", ALLOW_BASH, &bash_with_command("echo 'open"))
         .record()

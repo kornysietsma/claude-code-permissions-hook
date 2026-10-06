@@ -1,5 +1,6 @@
 use crate::agent::Agent;
 use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule, RuleKind, rule_label};
+use crate::shell;
 use anyhow::{Context, Result, anyhow, bail};
 use globset::GlobBuilder;
 use regex::Regex;
@@ -54,11 +55,20 @@ struct RawConfig {
     audit: Option<AuditConfig>,
     #[serde(default)]
     patterns: BTreeMap<String, String>,
+    #[serde(default)]
+    shell: RawShell,
     // Kept as tables so each rule can be parsed with its index in error messages
     #[serde(default, rename = "rule")]
     rules: Vec<toml::Table>,
     #[serde(default, rename = "command_rule")]
     command_rules: Vec<toml::Table>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawShell {
+    #[serde(default)]
+    safe_env: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +157,12 @@ impl Config {
             .enumerate()
             .map(|(i, table)| compile_command_rule(i + 1, table, &patterns))
             .collect::<Result<_>>()?;
+        let safe_env = match raw.shell.safe_env {
+            safe_env if safe_env.is_empty() => vec![],
+            safe_env => {
+                compile_regexes(OneOrMany::Many(safe_env), &patterns).context("[shell] safe_env")?
+            }
+        };
         Ok(Config {
             audit: raw.audit,
             pattern_names,
@@ -154,6 +170,7 @@ impl Config {
                 rules,
                 command_rules,
                 shell_tool,
+                shell: shell::Settings { safe_env },
             },
         })
     }

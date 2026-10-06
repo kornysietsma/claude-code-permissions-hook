@@ -89,7 +89,8 @@ struct SegmentRecord<'a> {
     segment: &'a Segment,
     /// Command rule matches, which carry no `segment` here
     matches: Vec<MatchedRule>,
-    decision: Option<Decision>,
+    /// A decision, `neutral`, or `null` when no command rule matched
+    decision: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -122,7 +123,11 @@ impl<'a> ShellRecord<'a> {
                         ..MatchedRule::from(m)
                     })
                     .collect(),
-                decision: *decision,
+                decision: if segment.is_neutral() {
+                    Some("neutral")
+                } else {
+                    decision.map(Decision::as_str)
+                },
             })
             .collect();
         let constructs = shell

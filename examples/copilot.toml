@@ -19,6 +19,12 @@ file = "/tmp/tool-gate-hook-copilot.jsonl"
 level = "matched"      # off | matched | all
 max_value_len = 1024   # truncate long strings in the log; 0 = never truncate
 
+# Variables that may be set without asking (`RUST_LOG=debug cargo test`, `env NO_COLOR=1 …`,
+# `export CI=1`). Any other assignment asks: PATH, GIT_PAGER, LD_PRELOAD and the like change
+# what later commands run.
+[shell]
+safe_env = ['^RUST_(LOG|BACKTRACE)$', '^NO_COLOR$', '^CI$', '^TERM$', '^LANG$', '^LC_']
+
 [[command_rule]]
 decision = "allow"
 description = "cargo workflow"

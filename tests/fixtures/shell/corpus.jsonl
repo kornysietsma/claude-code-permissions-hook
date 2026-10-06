@@ -21,7 +21,7 @@
 {"command":"cat spec.md && cat Cargo.toml && wc -l src/*.rs tests/*.rs scripts/* && ls","names":["cat","cat","wc","ls"],"floors":["expansion"]}
 {"command":"for f in src/*.rs; do echo \"=== $f\"; cat -n $f; done","names":[],"floors":["unsupported"]}
 {"command":"diff <(grep \"^legacy_python\" examples/claude.toml) <(grep \"^legacy_python\" examples/copilot.toml) && echo patterns identical","names":["diff","grep","grep","echo"],"floors":["expansion"]}
-{"command":"cd ~/results && ls; D=$(ls -d */ | tail -1); echo \"latest: $D\"","names":["cd","ls","ls","tail","echo"],"floors":["expansion","unsupported"]}
-{"command":"S=/private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad && bash $S/simulate.sh","names":["bash"],"floors":["expansion","unsupported"]}
-{"command":"chmod +x scripts/copilot-verify.sh\nS=/private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad\necho done","names":["chmod","echo"],"floors":["unsupported"]}
+{"command":"cd ~/results && ls; D=$(ls -d */ | tail -1); echo \"latest: $D\"","names":["cd","ls","","ls","tail","echo"],"floors":["env_assign","expansion"]}
+{"command":"S=/private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad && bash $S/simulate.sh","names":["","bash"],"floors":["env_assign","expansion"]}
+{"command":"chmod +x scripts/copilot-verify.sh\nS=/private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad\necho done","names":["chmod","","echo"],"floors":["env_assign"]}
 {"command":"(nc -z -w2 localhost 22 && echo \"port 22 open\") || echo \"port 22 closed\"; echo \"home=$HOME user=$(whoami)\"","names":["nc","echo","echo","echo","whoami"],"floors":["expansion"]}

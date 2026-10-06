@@ -149,3 +149,30 @@ fn invalid_named_pattern_is_an_error_even_if_unused() {
 
     assert!(error.contains("pattern broken"), "{error}");
 }
+
+#[test]
+fn shell_safe_env_takes_regexes_and_patterns() {
+    let config = Config::from_toml(
+        "[patterns]\nrust = '^RUST_LOG$'\n\n[shell]\nsafe_env = ['@rust', '^CI$']",
+        Agent::Claude,
+    )
+    .unwrap();
+
+    assert_eq!(config.policy.shell.safe_env.len(), 2);
+    assert_eq!(config.policy.shell.safe_env[0].as_str(), "^RUST_LOG$");
+}
+
+#[test]
+fn shell_section_errors() {
+    for (toml, expected) in [
+        ("[shell]\nsafe_envs = []", "unknown field `safe_envs`"),
+        ("[shell]\nsafe_env = ['(oops']", "[shell] safe_env"),
+        (
+            "[shell]\nsafe_env = ['@missing']",
+            "unknown pattern @missing",
+        ),
+    ] {
+        let error = error_text(toml);
+        assert!(error.contains(expected), "{toml}: {error}");
+    }
+}

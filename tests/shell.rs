@@ -13,6 +13,12 @@ fn shell_payload(agent: Agent, command: &str) -> String {
 }
 
 const CONFIG: &str = r#"
+[patterns]
+rust_env = '^RUST_(LOG|BACKTRACE)$'
+
+[shell]
+safe_env = ['@rust_env', '^NO_COLOR$']
+
 [[command_rule]]
 decision = "allow"
 description = "cargo workflow"
@@ -53,6 +59,11 @@ match.name = { regex = '^(echo|cat|date)$' }
 decision = "deny"
 description = "downloads"
 match.name = { equals = "curl" }
+
+[[command_rule]]
+decision = "allow"
+description = "read-only git"
+match.text = { regex = '^git (log|status)\b' }
 "#;
 
 fn outcome(agent: Agent, command: &str) -> Outcome {
@@ -145,7 +156,6 @@ fn syntax_that_cannot_be_checked_asks_even_when_every_segment_is_allowed() {
     for (command, description, why) in [
         ("if true; then cargo test; fi", UNSUPPORTED, "if statement"),
         ("for f in a b; do ls; done", UNSUPPORTED, "for loop"),
-        ("FOO=1 cargo test", UNSUPPORTED, "assignment FOO"),
         ("ls $HOME", EXPANSION, "variable in $HOME"),
         ("ls *.rs", EXPANSION, "glob in *.rs"),
         ("ls ${(f)x}", EXPANSION, "variable in ${(f)x}"),
@@ -174,6 +184,94 @@ fn syntax_that_cannot_be_checked_asks_even_when_every_segment_is_allowed() {
         assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
         let reason = reason(command);
         assert!(reason.starts_with(description), "{command}: {reason}");
+        assert!(reason.contains(why), "{command}: {reason}");
+    }
+}
+
+const ENV_ASSIGN: &str = "tool-gate-hook: ask — a variable not listed in [shell] safe_env";
+
+#[test]
+fn safe_env_assignments_are_allowed() {
+    for command in [
+        "RUST_LOG=debug cargo test",
+        "env RUST_LOG=debug NO_COLOR=1 cargo test",
+        "RUST_BACKTRACE=1; cargo test",
+    ] {
+        assert_eq!(decision(command).as_deref(), Some("allow"), "{command}");
+    }
+    // `export` is an ordinary command, and CONFIG has no rule for it
+    assert_eq!(decision("export RUST_LOG=debug && cargo test"), None);
+}
+
+#[test]
+fn other_assignments_ask() {
+    for (command, name) in [
+        ("GIT_PAGER=x git log", "GIT_PAGER"),
+        ("PATH=./evil cargo test", "PATH"),
+        ("PATH=./evil; cargo test", "PATH"),
+        ("export GIT_PAGER=x; git log", "GIT_PAGER"),
+        ("declare -x GIT_PAGER=x; git log", "GIT_PAGER"),
+        ("env GIT_PAGER=x git log", "GIT_PAGER"),
+        ("FOO=1", "FOO"),
+    ] {
+        assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
+        let reason = reason(command);
+        assert!(reason.starts_with(ENV_ASSIGN), "{command}: {reason}");
+        assert!(
+            reason.contains(&format!("assignment {name}")),
+            "{command}: {reason}"
+        );
+    }
+}
+
+#[test]
+fn a_command_of_only_safe_assignments_passes_through() {
+    assert_eq!(decision("RUST_LOG=1"), None);
+}
+
+#[test]
+fn assignment_values_are_checked() {
+    assert_eq!(decision("RUST_LOG=$x cargo test").as_deref(), Some("ask"));
+    assert!(reason("RUST_LOG=$x cargo test").contains("variable in RUST_LOG=$x"));
+    assert_eq!(decision("X=$(curl x)").as_deref(), Some("deny"));
+    assert_eq!(
+        decision("RUST_LOG=$(curl x) cargo test").as_deref(),
+        Some("deny")
+    );
+}
+
+#[test]
+fn a_deny_beats_an_assignment_floor() {
+    assert_eq!(decision("PATH=./evil rm -rf /").as_deref(), Some("deny"));
+}
+
+#[test]
+fn wrapped_commands_are_checked() {
+    for command in [
+        "timeout 60 cargo test",
+        "timeout -s KILL 60 cargo test",
+        "nice -n 5 cargo test",
+        "nohup cargo test",
+        "env RUST_LOG=debug timeout 60 cargo test",
+    ] {
+        assert_eq!(decision(command).as_deref(), Some("allow"), "{command}");
+    }
+    assert_eq!(decision("timeout 60 python3 x.py").as_deref(), Some("deny"));
+    assert_eq!(decision("nice env rm -rf /").as_deref(), Some("deny"));
+    // A wrapper with nothing to run is the command itself
+    assert_eq!(decision("timeout"), None);
+}
+
+#[test]
+fn unknown_wrapper_options_ask() {
+    for (command, why) in [
+        ("timeout --bogus 60 cargo test", "timeout option --bogus"),
+        ("env -i cargo test", "env option -i"),
+        ("nice -5 cargo test", "nice option -5"),
+    ] {
+        assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
+        let reason = reason(command);
+        assert!(reason.starts_with(UNSUPPORTED), "{command}: {reason}");
         assert!(reason.contains(why), "{command}: {reason}");
     }
 }

@@ -22,6 +22,7 @@ pub struct Policy {
     pub rules: Vec<Rule>,
     pub command_rules: Vec<Rule>,
     pub shell_tool: ShellTool,
+    pub shell: shell::Settings,
 }
 
 /// Which kind of rule (or built-in check) produced a match
@@ -103,7 +104,8 @@ pub struct Evaluation {
 #[derive(Debug)]
 pub struct ShellEvaluation {
     pub analysis: Analysis,
-    /// Per segment: the most restrictive matching command rule's decision, if any
+    /// Per segment: the most restrictive matching command rule's decision, if any; always
+    /// `None` for neutral segments
     pub segment_decisions: Vec<Option<Decision>>,
 }
 
@@ -136,7 +138,7 @@ impl Policy {
         }
 
         let analysis = match lookup(payload, self.shell_tool.command_path).and_then(Value::as_str) {
-            Some(command) => shell::analyse(command, &context.home),
+            Some(command) => shell::analyse(command, &context.home, &self.shell),
             None => Analysis::unsupported("no command string in the payload"),
         };
         matches.extend(
@@ -151,6 +153,9 @@ impl Policy {
             .iter()
             .enumerate()
             .map(|(i, segment)| {
+                if segment.is_neutral() {
+                    return None;
+                }
                 let value = serde_json::to_value(segment).unwrap_or_default();
                 let segment_matches: Vec<Match> = self
                     .command_rules
@@ -164,10 +169,14 @@ impl Policy {
             })
             .collect::<Vec<_>>();
 
-        let all_allowed = !segment_decisions.is_empty()
-            && segment_decisions
-                .iter()
-                .all(|decision| *decision == Some(Decision::Allow));
+        let mut checked = analysis
+            .segments
+            .iter()
+            .zip(&segment_decisions)
+            .filter(|(segment, _)| !segment.is_neutral())
+            .peekable();
+        let all_allowed = checked.peek().is_some()
+            && checked.all(|(_, decision)| *decision == Some(Decision::Allow));
         let decided_by = if matches.iter().any(|m| m.decision > Decision::Allow) {
             most_restrictive(&matches)
         } else if all_allowed {
