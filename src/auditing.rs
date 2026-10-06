@@ -99,6 +99,8 @@ struct ConstructRecord<'a> {
     segment: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<&'a str>,
     floor: bool,
 }
 
@@ -131,6 +133,7 @@ impl<'a> ShellRecord<'a> {
                 construct: construct.kind.name(),
                 segment: construct.segment.map(|i| i + 1),
                 detail: construct.detail.as_deref(),
+                target: construct.target.as_deref(),
                 floor: construct.kind.is_floor(),
             })
             .collect();

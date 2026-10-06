@@ -30,7 +30,23 @@ const AGREED: &[&str] = &[
 ];
 
 /// Words zsh and bash may expand differently; we must not treat them as static
-const DISAGREED: &[&str] = &["echo =ls", "echo *.rs", "echo {a,b}", "echo ${(f)x}"];
+const DISAGREED: &[&str] = &[
+    "echo =ls",
+    "echo *.rs",
+    "echo a?",
+    "echo [ab]",
+    "echo {a,b}",
+    "echo x{1..3}",
+    "echo ${(f)x}",
+    "echo $x",
+    r#"echo "$x""#,
+    "echo ~+ ~root",
+    "echo $((1+2))",
+    "echo $(echo a b)",
+    "echo `echo a b`",
+    r#"echo $"hi""#,
+    "cat <<EOF\n$x\nEOF",
+];
 
 fn shell_words(shell: &str, args: &[&str], command: &str) -> Option<Vec<String>> {
     if !Path::new(shell).exists() {

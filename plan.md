@@ -11,8 +11,8 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ## Status
 
 - **Branch** `shell-parsing`, not pushed; the PR is raised at the end.
-- **Done:** step 1 (brush-parser spike), step 2 (compound commands allowed by command rules) and step 3 (audit `shell` object and `explain`).
-- **Next:** step 4, substitutions, expansions and dynamic command names.
+- **Done:** steps 1 to 4 (brush-parser spike; compound commands allowed by command rules; audit `shell` object and `explain`; substitutions, expansions and dynamic command names).
+- **Next:** step 5, wrappers, `[shell] safe_env` and `env_assign`.
 
 ### Working on this branch
 
@@ -29,16 +29,16 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Technical context
 
-### Code shape (as of step 3)
+### Code shape (as of step 4)
 
 | Module | Contents | Still to come |
 |--------|----------|---------------|
-| `src/shell/mod.rs` | `analyse(command, home) -> Analysis`, the allow-listed `Walker`, `Segment`, `Redirect`, `Construct`, `ConstructKind` (`ParseError`, `Unsupported` so far; `name()`, `is_floor()`, `describe()`), and `Analysis::unsupported(detail)`. | Recursion (4), other constructs and floors (4–7), wrappers and env (5), `cd` and effective directory (7). `analyse` will need `cwd` and `[shell]` settings. |
-| `src/shell/words.rs` | `static_value(raw, home, options) -> Result<String, why>`, `$'…'` decoding, `quote()` for `text`, with unit tests. | Distinguishing expansion kinds for the `Expansion` and `DynamicCommand` floors (4). |
+| `src/shell/mod.rs` | `analyse(command, home) -> Analysis`; the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, walked after their segment is pushed (`walk_pending`). `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording. | Other floors (5–7), wrappers and env (5), `cd` and effective directory (7). `analyse` will need `cwd` and `[shell]` settings. |
+| `src/shell/words.rs` | `analyse(raw, home, options) -> WordInfo { value: Result<String, NotStatic>, substitutions }`, `analyse_heredoc(raw, options)`; `NotStatic::{Expansion, Unsupported}(why)`; `$'…'` decoding, `quote()` for `text`, with unit tests. | |
 | `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`; `Agent::shell_payload(command, cwd)` (a minimal payload, used by `explain` and tests). | |
 | `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[[command_rule]]`; the errors for an allow `[[rule]]` that can match the shell tool, and for a command rule with no conditions. | `[[construct_rule]]` (8), `[shell]` (5), `paths_under` (7). |
 | `src/policy.rs` | `Policy { rules, command_rules, shell_tool }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions }> }`; the combiner in `Policy::evaluate`; `floor_match`. | `ConstructRule` kind and evaluation (8), `paths_under` (7). |
-| `src/auditing.rs` | `DecidedBy` / `MatchedRule` with `kind`, optional `index` and `segment`. `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated); the caller checks the level with `AuditConfig::records`. Segment `matches` are the command-rule matches for that segment, without `segment`. | Neutral segment decisions (5, 7), construct `target` for `redirect_write` (8). |
+| `src/auditing.rs` | `DecidedBy` / `MatchedRule` with `kind`, optional `index` and `segment`. `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated); the caller checks the level with `AuditConfig::records`. Segment `matches` are the command-rule matches for that segment, without `segment`. | Neutral segment decisions (5, 7). |
 | `src/validate.rs` | Summary lines for rules and command rules. | Construct rules, `safe_env`, segment-field warnings (9). |
 | `src/lib.rs`, `src/main.rs` | `run`, `validate` and `explain` (`lib::explain(agent, config_path, input, context) -> Result<Value>`; input is a payload or an audit record, unwrapped by its `payload` key; `--payload -` reads stdin). | |
 
@@ -48,10 +48,10 @@ Tests:
 |------|----------|
 | `tests/shell.rs` | Acceptance tests through `run` for both agents. Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. Put a helper here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
 | `tests/shell_differential.rs` | `AGREED` (static commands zsh, bash and we split identically) and `DISAGREED` (must hit a floor). |
-| `tests/shell_corpus.rs` | The ignored local-corpus summary. |
+| `tests/shell_corpus.rs` | `curated_corpus_is_analysed_as_expected` checks `tests/fixtures/shell/corpus.jsonl` (sanitised real commands with expected segment names and floors). The ignored local-corpus summary prints each floor's details. To add curated cases, generate the expectations with `explain` and an empty config, then review them. |
 | `tests/audit.rs` | Audit records, including the full `shell` shape (`shell_record_shows_each_segment_and_construct`) and truncation inside `shell`. |
 | `tests/explain.rs` | `lib::explain` with both input forms, both agents, and errors. `tests/smoke.rs` spawns the `explain` CLI. |
-| `tests/examples.rs` | The example configs, including legacy-python cases. `legacy_python_inside_substitutions_is_not_allowed` asserts only "not allowed" until step 4. |
+| `tests/examples.rs` | The example configs, including legacy-python cases. `legacy_python_inside_substitutions_is_denied` covers `$( )`, backticks, process substitution and unquoted heredocs. |
 
 ### Design decisions
 
@@ -103,14 +103,14 @@ Built early so every later step can be checked by hand.
 
 **Manual:** `cargo run -- explain --agent claude --config examples/claude.toml 'cargo build 2>&1 && cargo test | tee out.txt'`. Read the JSON and confirm it's understandable without the docs.
 
-### Step 4: substitutions, expansions, dynamic command names
+### Step 4: substitutions, expansions, dynamic command names ✅
 
-- [ ] Word classification: static, or expansion with a detail (which piece). This replaces step 2's temporary `Unsupported` for non-static words.
-- [ ] Recursion into `$( )`, backticks and process substitutions (in words and redirect targets), with a depth cap of 16 (deeper is `Unsupported`). Inner segments join the segment list in textual order.
-- [ ] Heredocs: with an unquoted delimiter, parse the body with `word::parse_heredoc`; any expansion is `Expansion`, and substitutions are recursed. With a quoted delimiter the body is literal. Here-strings are treated like words.
-- [ ] Floors: `Expansion` (args, env values, redirect targets, heredoc bodies) and `DynamicCommand` (the command word).
-- [ ] Constructs recorded (not yet configurable): `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`.
-- [ ] Commit a sanitised, curated subset of the corpus as `tests/fixtures/shell/corpus.jsonl`, with expected outcomes asserted in a normal test.
+- [x] Word classification: static, or expansion with a detail (which piece). This replaces step 2's temporary `Unsupported` for non-static words.
+- [x] Recursion into `$( )`, backticks and process substitutions (in words and redirect targets), with a depth cap of 16 (deeper is `Unsupported`). Inner segments follow the segment they were found in (a command comes before the commands substituted into it).
+- [x] Heredocs: with an unquoted delimiter, parse the body with `word::parse_heredoc`; any expansion is `Expansion`, and substitutions are recursed. With a quoted delimiter the body is literal. Here-strings are treated like words.
+- [x] Floors: `Expansion` (args, env values, redirect targets, heredoc bodies) and `DynamicCommand` (the command word).
+- [x] Constructs recorded (not yet configurable): `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`.
+- [x] Commit a sanitised, curated subset of the corpus as `tests/fixtures/shell/corpus.jsonl`, with expected outcomes asserted in a normal test.
 
 **Automated:**
 - `echo $(curl x)` with a deny on curl → deny; without the deny → ask;
@@ -234,10 +234,8 @@ Built early so every later step can be checked by hand.
 
 ## Notes for later steps
 
-**Temporary `Unsupported` cases from step 2, each replaced by a later step:**
-- non-static words → step 4 (`Expansion` / `DynamicCommand`);
-- process substitutions, and heredocs with an unquoted delimiter → step 4;
-- prefix assignments and assignment-only commands → step 5 (`EnvAssign`, neutral segments).
+**Temporary `Unsupported` cases from step 2, still to replace:**
+- prefix assignments and assignment-only commands → step 5 (`EnvAssign`, neutral segments). An assignment-only command currently gets two floors (`assignment X` and `no command word in …`); substitutions in assignment values are already walked.
 
 Redirect-only commands (`> file`) stay `Unsupported` for good (spec).
 
@@ -252,4 +250,16 @@ Redirect-only commands (`> file`) stay `Unsupported` for good (spec).
 - `explain` output adds a `reason` (the text the agent would see) after `decision`; audit records never have it (`AuditRecord::for_explanation`).
 - `explain` on an audit record whose payload was truncated (`auditing::is_truncated`) shows `decision: ask` with a truncation reason and no `decided_by`, and warns on stderr; the evaluated segments and matches are still shown.
 
-**For the skills and docs:** about a quarter of real commands ask because of shell variables (`$f`, `$d`), globs (`docs/*.md`), `for` loops and `S=…` assignments.
+**From step 4:**
+- Floor descriptions (reasons start `tool-gate-hook: ask — <description>`): `expansion` is "a value only the shell can work out", `dynamic_command` is "a command name only the shell can work out". Review them in step 9.
+- Details name the piece and the raw word: `variable in $HOME`, `glob in redirect *.log`, `variable in here-string $x`, `command substitution in heredoc body`, `process substitution in <(sort a)`.
+- A non-static word keeps its raw text in `name`/`args`/`text` (so `echo "latest: $D"` shows as `echo '"latest: $D"'`).
+- Substitutions inside `${…}` or `$((…))` (e.g. `${x:-$(cmd)}`) are not walked: the expansion floor still asks, but a deny on the inner command is missed.
+- Backquoted commands are re-parsed as brush gives them (only `` \` `` is unescaped), so `\$` and `\\` inside backticks differ slightly from bash. It errs towards fewer inner floors; the outer `expansion` floor always asks.
+- In unquoted heredoc bodies any `$` counts as an expansion, even a lone one.
+- Non-floor constructs: `pipe`, `background` and `subshell` point at the first segment inside; `redirect_read`/`redirect_write` carry `target`; a group's own redirects have no segment. `redirect_write` covers `>`, `>>`, `>|`, `<>`, `&>`, `&>>` and `>&file`, but not `/dev/null` or fd dups (`2>&1`, `>&-`, `3>&2-`). Heredoc `detail` is the delimiter, unquoted.
+- brush gives a quoted heredoc delimiter raw (`'EOF'`); it is now unquoted in redirects and constructs.
+
+**For the skills and docs:**
+- About a quarter of real commands ask because of shell variables (`$f`, `$d`), globs (`docs/*.md`), `for` loops and `S=…` assignments.
+- `echo ====` (a common separator) is allowed, but under zsh (Claude Code's shell) it fails with "=== not found" and skips the rest of the line, so agents should use `echo ---`. See the spec's static words for why `=`, `-` and `+` after a leading `=` are static.

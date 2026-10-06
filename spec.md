@@ -51,7 +51,7 @@ Claude Code runs `Bash` tool commands in the user's shell, which on macOS is **z
 
 - Unquoted `$var` isn't word-split in zsh: irrelevant, any parameter expansion is already `expansion`.
 - zsh glob qualifiers (`*(e:'cmd':)`) contain a glob (`expansion`) or are a bash syntax error (`parse_error`).
-- zsh **equals expansion**: an unquoted word starting with `=` (`=python3`) expands to a command path. Counted as `expansion`.
+- zsh **equals expansion**: an unquoted word starting with `=` (`=python3`) expands to a command path, or fails if there is no such command. Counted as `expansion`, unless what follows the `=` is only `=`, `-` and `+` (see static words).
 - zsh-only syntax (`${(f)x}`, `print -r --`, …) fails to parse or contains an expansion.
 - Shell-state builtins that change later segments (aliases, options, traps) are `shell_reentry` floors (below).
 
@@ -97,7 +97,7 @@ A word is static when its value can be known without running the shell. Its valu
 - a leading `~` (alone or before `/`) is the home directory. `~user`, `~+` and `~-` are `expansion`;
 - anything else (parameter, arithmetic and command substitution, `$"…"`) is `expansion`.
 
-Unquoted text (where quoted parts count as plain characters) is also `expansion` if it contains `$` (brush reads zsh's `${(f)x}` as the text `$` + `{(f)x}`), `*` or `?`, `[` with a later `]`, an extended glob (`+(`, `@(`, `!(`), or a brace expansion (`{…,…}` or `{…..…}`), or if it starts with `=` followed by anything (zsh equals expansion; a lone `=` is static). So `{}`, `HEAD@{1}`, `[` and `a=b` are static.
+Unquoted text (where quoted parts count as plain characters) is also `expansion` if it contains `$` (brush reads zsh's `${(f)x}` as the text `$` + `{(f)x}`), `*` or `?`, `[` with a later `]`, an extended glob (`+(`, `@(`, `!(`), or a brace expansion (`{…,…}` or `{…..…}`), or if it starts with `=` followed by anything other than `=`, `-` and `+` (zsh equals expansion). zsh replaces `=name` with the path of command `name`, or stops with an error when there is none; no command is called `===` or `-`, so a separator like `====` can only fail under zsh and is literal in bash. So `{}`, `HEAD@{1}`, `[`, `a=b`, `=` and `====` are static.
 
 ### Wrappers (built-in unwrapping)
 
@@ -123,7 +123,7 @@ Floors are built-in and can't be configured away. Each floor contributes `ask` (
 | `shell_reentry` | a segment `name` (basename) is a shell (`sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`), runs code (`eval`, `source`, `.`, `exec`, `trap`), or changes how later commands run (`alias`, `unalias`, `set`, `setopt`, `unsetopt`, `shopt`, `emulate`, `zmodload`, `enable`, `disable`, `autoload`), whatever its arguments. `command` and `builtin` are ordinary commands. |
 | `exec_tool` | `name` (basename) is `xargs`; or `name` is `find` and any arg is `-exec`, `-execdir`, `-ok`, `-okdir` or `-delete` |
 | `dynamic_command` | the command name contains any expansion or substitution |
-| `expansion` | any arg, env value or redirect target contains parameter expansion (`$x`, `${…}`, `$1`, …), arithmetic `$((…))`, command or process substitution, an unquoted glob (`*`, `?`, `[…]`) or brace expansion (`{a,b}`, `{1..3}`), or starts with an unquoted `=` (zsh equals expansion); also any of these in the body of a heredoc whose delimiter is unquoted (`<<EOF`; bodies of `<<'EOF'` / `<<"EOF"` are literal), and in a here-string (`<<<`) word. Quoted characters are literal. A leading `~` is not expansion. |
+| `expansion` | any arg, env value or redirect target contains parameter expansion (`$x`, `${…}`, `$1`, …), arithmetic `$((…))`, command or process substitution, an unquoted glob (`*`, `?`, `[…]`) or brace expansion (`{a,b}`, `{1..3}`), or starts with an unquoted `=` followed by something that could name a command (zsh equals expansion); also any of these in the body of a heredoc whose delimiter is unquoted (`<<EOF`; bodies of `<<'EOF'` / `<<"EOF"` are literal), and in a here-string (`<<<`) word. Quoted characters are literal. A leading `~` is not expansion. |
 | `env_assign` | an assignment whose name doesn't match any `[shell] safe_env` regex: inline prefixes, `env NAME=…`, assignment-only segments (`PATH=./evil; cargo test`), and `NAME=value` arguments of `export`, `declare`, `typeset`, `local`, `readonly` |
 | `cd` | `cd` / `pushd` to a path that isn't static and inside `{cwd}`; bare `cd`, `cd -`, `popd`, or any `cd` option |
 
@@ -211,7 +211,7 @@ Pattern references (`[patterns]`) work in all three rule kinds.
 For a shell-tool call:
 
 1. Evaluate `[[rule]]` entries against the raw payload (deny/ask only, by construction).
-2. Parse the command. On failure: `parse_error`. Walk the tree with the allow-listed walker; collect segments (in textual order, including recursed ones), constructs and floors. Track the effective directory for `cd`.
+2. Parse the command. On failure: `parse_error`. Walk the tree with the allow-listed walker; collect segments (in textual order, except that a command comes before the commands substituted into it), constructs and floors. Track the effective directory for `cd`.
 3. For each non-`cd` segment, evaluate every command rule; the segment's decision is the highest of its matching rules (deny > ask > allow), or **none** if nothing matched.
 4. Evaluate every construct rule against the collected constructs.
 5. Combine:

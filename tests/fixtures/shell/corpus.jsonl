@@ -1,0 +1,27 @@
+{"command":"cargo fmt --check && cargo clippy --all-targets -- -D warnings 2>&1 | tail -1 && cargo test 2>&1 | grep -E \"FAILED|failed\"; echo gate-done; git status --short","names":["cargo","cargo","tail","cargo","grep","echo","git"],"floors":[]}
+{"command":"(cargo outdated --root-deps-only 2>&1 | tail -15); cargo fmt --check","names":["cargo","tail","cargo"],"floors":[]}
+{"command":"rustc --version && cargo add brush-parser@=0.4.0 2>&1 | tail -3","names":["rustc","cargo","tail"],"floors":[]}
+{"command":"git checkout -b shell-parsing && sed -n 1,60p src/policy.rs","names":["git","sed"],"floors":[]}
+{"command":"git status --short | head -3; ls src | head -3","names":["git","head","ls","head"],"floors":[]}
+{"command":"cat AGENTS.md | sed -n 1,40p; sed -n 40,80p AGENTS.md","names":["cat","sed","sed"],"floors":[]}
+{"command":"git fetch -q origin && git rev-list --count main..HEAD && git diff --shortstat main..HEAD","names":["git","git","git"],"floors":[]}
+{"command":"git log --oneline -3 origin/main && git merge-base main HEAD && git log -1 --format='%h %ad %s' --date=short origin/main","names":["git","git","git"],"floors":[]}
+{"command":"git grep -n -E \"spec\\.md|plan\\.md|\\bphase [0-9]|\\bstep [0-9]|\\(spec\\)|the spec\" -- ':!spec.md' ':!plan.md'","names":["git"],"floors":[]}
+{"command":"grep -n -i -E \"bash|shell|powershell\" docs/copilot-tool-inputs.md docs/claude-tool-inputs.md | head -50","names":["grep","head"],"floors":[]}
+{"command":"jq '.hooks.PreToolUse' ~/.claude/settings.json","names":["jq"],"floors":[]}
+{"command":"jq -c '{ts:.ts[11:19],tool:.payload.tool_name,decision}' ~/.local/share/tool-gate-hook/claude.jsonl | tail -5","names":["jq","tail"],"floors":[]}
+{"command":"curl -s -o /dev/null -w \"%{http_code}\\n\" https://github.com/example/demo/tree/ca0dca0","names":["curl"],"floors":[]}
+{"command":"perl -pi -e 's/latest stable versions  $/latest stable versions./ if /lazy_static/' docs/review-findings.md && sed -n 41p docs/review-findings.md","names":["perl","sed"],"floors":[]}
+{"command":"sed -i '' 's/^- \\[ \\] \\*\\*10.1 Full review\\*\\*/- [x] **10.1 Full review**/' plan.md && grep -n \"10.1 Full\" plan.md","names":["sed","grep"],"floors":[]}
+{"command":"sed -n 44p plan.md > /dev/null; awk 'NR==45{print \"x\"; next} {print}' plan.md > plan.tmp && mv plan.tmp plan.md","names":["sed","awk","mv"],"floors":[]}
+{"command":"git add -A && git commit -q -F /private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad/commit-msg.txt","names":["git","git"],"floors":[]}
+{"command":"git add -A && git commit -q -F - <<'EOF'\nStep 8.2a: deny rule in examples/claude.toml\n\nA pattern and a deny rule that mirror the old one.\nEOF","names":["git","git"],"floors":[]}
+{"command":"gh pr create --base main --head rework --title \"Rework into tool-gate-hook\" --body-file /private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad/pr-body.md","names":["gh"],"floors":[]}
+{"command":"cat -n tests/claude.rs | head -150; echo ====; cat -n tests/copilot.rs | head -60","names":["cat","head","echo","cat","head"],"floors":[]}
+{"command":"cat spec.md && cat Cargo.toml && wc -l src/*.rs tests/*.rs scripts/* && ls","names":["cat","cat","wc","ls"],"floors":["expansion"]}
+{"command":"for f in src/*.rs; do echo \"=== $f\"; cat -n $f; done","names":[],"floors":["unsupported"]}
+{"command":"diff <(grep \"^legacy_python\" examples/claude.toml) <(grep \"^legacy_python\" examples/copilot.toml) && echo patterns identical","names":["diff","grep","grep","echo"],"floors":["expansion"]}
+{"command":"cd ~/results && ls; D=$(ls -d */ | tail -1); echo \"latest: $D\"","names":["cd","ls","ls","tail","echo"],"floors":["expansion","unsupported"]}
+{"command":"S=/private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad && bash $S/simulate.sh","names":["bash"],"floors":["expansion","unsupported"]}
+{"command":"chmod +x scripts/copilot-verify.sh\nS=/private/tmp/claude-501/-Users-someone-prj-demo/00000000-0000-0000-0000-000000000000/scratchpad\necho done","names":["chmod","echo"],"floors":["unsupported"]}
+{"command":"(nc -z -w2 localhost 22 && echo \"port 22 open\") || echo \"port 22 closed\"; echo \"home=$HOME user=$(whoami)\"","names":["nc","echo","echo","echo","whoami"],"floors":["expansion"]}

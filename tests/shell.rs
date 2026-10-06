@@ -43,6 +43,16 @@ match.name = { regex = '(^|/)(python[0-9.]*|pip[0-9]*)$' }
 decision = "ask"
 description = "git push"
 match.text = { regex = '^git push\b' }
+
+[[command_rule]]
+decision = "allow"
+description = "harmless"
+match.name = { regex = '^(echo|cat|date)$' }
+
+[[command_rule]]
+decision = "deny"
+description = "downloads"
+match.name = { equals = "curl" }
 "#;
 
 fn outcome(agent: Agent, command: &str) -> Outcome {
@@ -126,31 +136,107 @@ fn quoting_is_understood() {
     assert_eq!(decision("ls 'a && rm -rf /'").as_deref(), Some("allow"));
 }
 
+const UNSUPPORTED: &str = "tool-gate-hook: ask — shell syntax that tool-gate-hook can't check";
+const EXPANSION: &str = "tool-gate-hook: ask — a value only the shell can work out";
+const DYNAMIC_COMMAND: &str = "tool-gate-hook: ask — a command name only the shell can work out";
+
 #[test]
 fn syntax_that_cannot_be_checked_asks_even_when_every_segment_is_allowed() {
-    for (command, why) in [
-        ("if true; then cargo test; fi", "if statement"),
-        ("for f in a b; do ls; done", "for loop"),
-        ("ls $HOME", "variable in $HOME"),
-        ("ls *.rs", "glob in *.rs"),
-        ("ls ${(f)x}", "variable in ${(f)x}"),
-        ("FOO=1 cargo test", "assignment FOO"),
-        ("cargo test --features $(cat f)", "command substitution"),
+    for (command, description, why) in [
+        ("if true; then cargo test; fi", UNSUPPORTED, "if statement"),
+        ("for f in a b; do ls; done", UNSUPPORTED, "for loop"),
+        ("FOO=1 cargo test", UNSUPPORTED, "assignment FOO"),
+        ("ls $HOME", EXPANSION, "variable in $HOME"),
+        ("ls *.rs", EXPANSION, "glob in *.rs"),
+        ("ls ${(f)x}", EXPANSION, "variable in ${(f)x}"),
+        ("echo {a,b}", EXPANSION, "brace expansion in {a,b}"),
+        ("echo \"$HOME\"", EXPANSION, "variable in \"$HOME\""),
+        ("echo x > $f", EXPANSION, "variable in redirect $f"),
+        ("cat <<< $x", EXPANSION, "variable in here-string $x"),
+        (
+            "cargo test --features $(cat f)",
+            EXPANSION,
+            "command substitution in $(cat f)",
+        ),
+        ("echo `date`", EXPANSION, "command substitution in `date`"),
+        (
+            "cat <<EOF\nhi $USER\nEOF",
+            EXPANSION,
+            "variable in heredoc body",
+        ),
+        ("$CMD x", DYNAMIC_COMMAND, "variable in $CMD"),
+        (
+            "=python3 x.py",
+            DYNAMIC_COMMAND,
+            "zsh =command expansion in =python3",
+        ),
     ] {
         assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
         let reason = reason(command);
-        assert!(
-            reason
-                .starts_with("tool-gate-hook: ask — shell syntax that tool-gate-hook can't check"),
-            "{reason}"
-        );
+        assert!(reason.starts_with(description), "{command}: {reason}");
         assert!(reason.contains(why), "{command}: {reason}");
     }
 }
 
 #[test]
+fn quoted_words_are_static() {
+    for command in [
+        "ls '*.rs'",
+        "echo '$HOME'",
+        "echo '{a,b}'",
+        "cat <<'EOF'\n$(curl x) $HOME\nEOF",
+        "cat <<\"EOF\"\n`curl x`\nEOF",
+        "cat <<< 'hi there'",
+    ] {
+        assert_eq!(decision(command).as_deref(), Some("allow"), "{command}");
+    }
+}
+
+#[test]
+fn equals_signs_are_only_an_expansion_when_they_could_name_a_command() {
+    // zsh fails on `====` (no command is called `===`), so it can never run anything hidden
+    assert_eq!(decision("echo ==== && echo =-=-").as_deref(), Some("allow"));
+    assert_eq!(decision("echo =ls").as_deref(), Some("ask"));
+}
+
+#[test]
 fn a_deny_beats_a_floor() {
     assert_eq!(decision("rm -rf $HOME").as_deref(), Some("deny"));
+    assert_eq!(decision("$CMD; rm -rf /").as_deref(), Some("deny"));
+}
+
+#[test]
+fn substituted_commands_are_checked_too() {
+    for command in [
+        "echo $(curl x)",
+        "echo \"$(curl x)\"",
+        "echo `curl x`",
+        "echo $(echo $(curl x))",
+        "diff <(curl x) b",
+        "ls > >(curl x)",
+        "cat <<EOF\n$(curl x)\nEOF",
+        "cat <<EOF\n`curl x`\nEOF",
+        "cat <<< $(curl x)",
+        "{ ls; } > $(curl x)",
+    ] {
+        assert_eq!(decision(command).as_deref(), Some("deny"), "{command}");
+    }
+    assert_eq!(
+        reason("echo $(curl x)"),
+        "tool-gate-hook: deny by command rule #8 (downloads) — in \"curl x\""
+    );
+}
+
+#[test]
+fn substitutions_ask_even_when_every_command_in_them_is_allowed() {
+    for command in [
+        "echo $(date)",
+        "cat <<EOF\n$(date)\nEOF",
+        "cat <(ls a) <(ls b)",
+        "ls > >(cat)",
+    ] {
+        assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
+    }
 }
 
 #[test]

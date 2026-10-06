@@ -6,9 +6,85 @@ use regex::Regex;
 use std::path::Path;
 use std::sync::LazyLock;
 
-/// The word's value, or why it can't be known without running the shell
-pub fn static_value(raw: &str, home: &Path, options: &ParserOptions) -> Result<String, String> {
-    let pieces = word::parse(raw, options).map_err(|_| "cannot parse word".to_owned())?;
+/// Why a word's value can't be known without running the shell
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotStatic {
+    /// The shell would expand it; says which kind of expansion
+    Expansion(&'static str),
+    /// Something we don't decode
+    Unsupported(&'static str),
+}
+
+impl NotStatic {
+    pub fn why(self) -> &'static str {
+        match self {
+            NotStatic::Expansion(why) | NotStatic::Unsupported(why) => why,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct WordInfo {
+    pub value: Result<String, NotStatic>,
+    /// The raw commands inside `$( )` and backticks, anywhere in the word
+    pub substitutions: Vec<String>,
+}
+
+pub fn analyse(raw: &str, home: &Path, options: &ParserOptions) -> WordInfo {
+    match word::parse(raw, options) {
+        Ok(pieces) => WordInfo {
+            value: static_value(&pieces, home),
+            substitutions: substitutions(&pieces),
+        },
+        Err(_) => unparseable(),
+    }
+}
+
+/// A heredoc body with an unquoted delimiter, where only `$`, backticks and `\` are special
+pub fn analyse_heredoc(raw: &str, options: &ParserOptions) -> WordInfo {
+    let Ok(pieces) = word::parse_heredoc(raw, options) else {
+        return unparseable();
+    };
+    let expansion = pieces
+        .iter()
+        .find_map(|WordPieceWithSource { piece, .. }| match piece {
+            WordPiece::Text(text) if text.contains('$') => Some(NotStatic::Expansion("variable")),
+            WordPiece::Text(_) | WordPiece::EscapeSequence(_) => None,
+            other => Some(describe(other)),
+        });
+    WordInfo {
+        value: expansion.map_or_else(|| Ok(raw.to_owned()), Err),
+        substitutions: substitutions(&pieces),
+    }
+}
+
+fn unparseable() -> WordInfo {
+    WordInfo {
+        value: Err(NotStatic::Unsupported("unparseable word")),
+        substitutions: vec![],
+    }
+}
+
+fn substitutions(pieces: &[WordPieceWithSource]) -> Vec<String> {
+    pieces
+        .iter()
+        .flat_map(|WordPieceWithSource { piece, .. }| match piece {
+            WordPiece::CommandSubstitution(command)
+            | WordPiece::BackquotedCommandSubstitution(command) => vec![command.clone()],
+            WordPiece::DoubleQuotedSequence(inner)
+            | WordPiece::GettextDoubleQuotedSequence(inner) => substitutions(inner),
+            WordPiece::Text(_)
+            | WordPiece::SingleQuotedText(_)
+            | WordPiece::AnsiCQuotedText(_)
+            | WordPiece::TildeExpansion(_)
+            | WordPiece::ParameterExpansion(_)
+            | WordPiece::EscapeSequence(_)
+            | WordPiece::ArithmeticExpression(_) => vec![],
+        })
+        .collect()
+}
+
+fn static_value(pieces: &[WordPieceWithSource], home: &Path) -> Result<String, NotStatic> {
     let mut value = String::new();
     // Unquoted text as written, with each quoted or expanded piece as `_`: where globs and
     // brace expansions can still happen
@@ -25,7 +101,8 @@ pub fn static_value(raw: &str, home: &Path, options: &ParserOptions) -> Result<S
             }
             WordPiece::AnsiCQuotedText(text) => {
                 value.push_str(
-                    &decode_ansi_c(text).ok_or_else(|| "unsupported $'…' escape".to_owned())?,
+                    &decode_ansi_c(text)
+                        .ok_or(NotStatic::Unsupported("unsupported $'…' escape"))?,
                 );
                 unquoted.push('_');
             }
@@ -38,7 +115,7 @@ pub fn static_value(raw: &str, home: &Path, options: &ParserOptions) -> Result<S
                     match piece {
                         WordPiece::Text(text) => value.push_str(text),
                         WordPiece::EscapeSequence(escape) => value.push_str(unescape(escape)),
-                        _ => return Err(describe(piece).to_owned()),
+                        _ => return Err(describe(piece)),
                     }
                 }
                 unquoted.push('_');
@@ -47,17 +124,17 @@ pub fn static_value(raw: &str, home: &Path, options: &ParserOptions) -> Result<S
                 value.push_str(&home.to_string_lossy());
                 unquoted.push('_');
             }
-            other => return Err(describe(other).to_owned()),
+            other => return Err(describe(other)),
         }
     }
     match unquoted_expansion(&unquoted) {
-        Some(why) => Err(why.to_owned()),
+        Some(why) => Err(NotStatic::Expansion(why)),
         None => Ok(value),
     }
 }
 
-fn describe(piece: &WordPiece) -> &'static str {
-    match piece {
+fn describe(piece: &WordPiece) -> NotStatic {
+    NotStatic::Expansion(match piece {
         WordPiece::ParameterExpansion(_) => "variable",
         WordPiece::CommandSubstitution(_) | WordPiece::BackquotedCommandSubstitution(_) => {
             "command substitution"
@@ -70,7 +147,7 @@ fn describe(piece: &WordPiece) -> &'static str {
         | WordPiece::AnsiCQuotedText(_)
         | WordPiece::DoubleQuotedSequence(_)
         | WordPiece::EscapeSequence(_) => "expansion",
-    }
+    })
 }
 
 /// Expansions that brush-parser leaves inside unquoted text
@@ -89,7 +166,12 @@ fn unquoted_expansion(unquoted: &str) -> Option<&'static str> {
         Some("extended glob")
     } else if BRACES.is_match(unquoted) {
         Some("brace expansion")
-    } else if unquoted.len() > 1 && unquoted.starts_with('=') {
+    } else if unquoted
+        .strip_prefix('=')
+        .is_some_and(|name| name.contains(|c| !"=-+".contains(c)))
+    {
+        // zsh replaces `=name` with the path of command `name`, or fails if there's none. No
+        // command is called `===` or `-`, so separators like `====` only ever fail.
         Some("zsh =command expansion")
     } else {
         None
@@ -173,8 +255,54 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    fn word(raw: &str) -> WordInfo {
+        analyse(raw, Path::new("/home/me"), &ParserOptions::default())
+    }
+
     fn value(raw: &str) -> Result<String, String> {
-        static_value(raw, Path::new("/home/me"), &ParserOptions::default())
+        word(raw).value.map_err(|why| why.why().to_owned())
+    }
+
+    fn heredoc(raw: &str) -> WordInfo {
+        analyse_heredoc(raw, &ParserOptions::default())
+    }
+
+    #[test]
+    fn substitutions_are_found_anywhere_in_a_word() {
+        assert_eq!(
+            word(r#"a$(curl x)"`date`"$x"#).substitutions,
+            vec!["curl x", "date"]
+        );
+        assert_eq!(word("'$(curl x)'").substitutions, Vec::<String>::new());
+    }
+
+    #[test]
+    fn undecodable_words_are_unsupported_rather_than_expansions() {
+        assert_eq!(
+            word(r"$'\xff'").value,
+            Err(NotStatic::Unsupported("unsupported $'…' escape"))
+        );
+        assert_eq!(word("$x").value, Err(NotStatic::Expansion("variable")));
+    }
+
+    #[test]
+    fn heredoc_bodies_expand_only_dollars_and_backticks() {
+        let literal = "it's \"quoted\" *.rs {a,b} ~/x\n";
+        assert_eq!(heredoc(literal).value, Ok(literal.to_owned()));
+        assert_eq!(
+            heredoc("hi $USER\n").value,
+            Err(NotStatic::Expansion("variable"))
+        );
+        assert_eq!(
+            heredoc("${(f)x}\n").value,
+            Err(NotStatic::Expansion("variable"))
+        );
+        let substituted = heredoc("a $(curl x)\nb `date`\n");
+        assert_eq!(
+            substituted.value,
+            Err(NotStatic::Expansion("command substitution"))
+        );
+        assert_eq!(substituted.substitutions, vec!["curl x", "date"]);
     }
 
     #[test]
@@ -224,7 +352,9 @@ mod tests {
         assert_eq!(value("{a,b}"), Err("brace expansion".into()));
         assert_eq!(value("x{1..3}"), Err("brace expansion".into()));
         assert_eq!(value("=python3"), Err("zsh =command expansion".into()));
-        assert_eq!(value("=="), Err("zsh =command expansion".into()));
+        assert_eq!(value("=a=b"), Err("zsh =command expansion".into()));
+        assert_eq!(value("=-x"), Err("zsh =command expansion".into()));
+        assert_eq!(value("='ls'"), Err("zsh =command expansion".into()));
     }
 
     #[test]
@@ -237,6 +367,9 @@ mod tests {
         assert_eq!(value("["), Ok("[".into()));
         assert_eq!(value("]"), Ok("]".into()));
         assert_eq!(value("="), Ok("=".into()));
+        assert_eq!(value("===="), Ok("====".into()));
+        assert_eq!(value("=-=-"), Ok("=-=-".into()));
+        assert_eq!(value("=+"), Ok("=+".into()));
         assert_eq!(value("a=b"), Ok("a=b".into()));
         assert_eq!(value("a#b"), Ok("a#b".into()));
     }

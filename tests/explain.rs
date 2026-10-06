@@ -192,7 +192,7 @@ fn the_reason_the_agent_would_see_follows_the_decision() {
     );
     assert_eq!(
         record["reason"],
-        "tool-gate-hook: ask — shell syntax that tool-gate-hook can't check (glob in *.rs), in \"ls *.rs\""
+        "tool-gate-hook: ask — a value only the shell can work out (glob in *.rs), in \"ls *.rs\""
     );
     assert_eq!(explanation.warnings, Vec::<String>::new());
 }

@@ -198,13 +198,15 @@ fn legacy_python_in_quoted_text_is_not_denied() {
 }
 
 #[test]
-fn legacy_python_inside_substitutions_is_not_allowed() {
-    for command in ["echo $(python -V)", "echo `python -V`"] {
+fn legacy_python_inside_substitutions_is_denied() {
+    for command in [
+        "echo $(python -V)",
+        "echo `python -V`",
+        "diff <(pip freeze) reqs.txt",
+        "cat <<EOF\n$(python -V)\nEOF",
+    ] {
         for agent in [Agent::Claude, Agent::Copilot] {
-            assert!(
-                example_shell_decision(agent, command).is_some(),
-                "{agent:?}: {command}"
-            );
+            assert!(denied_legacy_python(agent, command), "{agent:?}: {command}");
         }
     }
 }

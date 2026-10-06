@@ -160,13 +160,14 @@ match.text = { regex = '^git push\b' }
                 }
             ],
             "constructs": [
-                { "construct": "unsupported", "segment": 3, "detail": "variable in $HOME", "floor": true }
+                { "construct": "expansion", "segment": 3, "detail": "variable in $HOME", "floor": true },
+                { "construct": "redirect_write", "segment": 3, "target": "out.txt", "floor": false }
             ]
         })
     );
     assert_eq!(
         record["decided_by"],
-        json!({ "kind": "floor", "description": "unsupported" })
+        json!({ "kind": "floor", "description": "expansion" })
     );
 }
 
