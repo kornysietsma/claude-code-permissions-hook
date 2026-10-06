@@ -26,6 +26,7 @@ fn curated_corpus_is_analysed_as_expected() {
         let analysis = analyse(
             &expected.command,
             Path::new("/home/me"),
+            Path::new("/tmp"),
             &Settings::default(),
         );
         let actual = Expected {
@@ -59,7 +60,12 @@ fn summarise_local_corpus() {
     for line in corpus.lines() {
         let command: String = serde_json::from_str(line).unwrap();
         total += 1;
-        let analysis = analyse(&command, Path::new("/home/me"), &Settings::default());
+        let analysis = analyse(
+            &command,
+            Path::new("/home/me"),
+            Path::new("/tmp"),
+            &Settings::default(),
+        );
         let mut found: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for construct in analysis.constructs.iter().filter(|c| c.kind.is_floor()) {
             found

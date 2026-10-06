@@ -176,3 +176,31 @@ fn shell_section_errors() {
         assert!(error.contains(expected), "{toml}: {error}");
     }
 }
+
+#[test]
+fn paths_under_alone_is_enough_for_a_command_rule() {
+    let config = Config::from_toml(
+        "[[command_rule]]\ndecision = \"allow\"\npaths_under = [\"{cwd}\"]",
+        Agent::Claude,
+    )
+    .unwrap();
+
+    assert_eq!(config.policy.command_rules[0].paths_under, vec!["{cwd}"]);
+}
+
+#[test]
+fn paths_under_must_list_directories() {
+    let error = error_text("[[command_rule]]\ndecision = \"allow\"\npaths_under = []");
+
+    assert!(
+        error.contains("command rule #1: paths_under: empty list"),
+        "{error}"
+    );
+}
+
+#[test]
+fn paths_under_is_only_for_command_rules() {
+    let error = error_text("[[rule]]\ndecision = \"ask\"\npaths_under = [\"{cwd}\"]");
+
+    assert!(error.contains("paths_under"), "{error}");
+}

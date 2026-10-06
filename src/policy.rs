@@ -1,13 +1,13 @@
 use crate::Context;
 use crate::agent::{ShellTool, ToolCall};
 use crate::paths;
-use crate::shell::{self, Analysis, Construct};
+use crate::shell::{self, Analysis, Construct, Segment};
 use globset::GlobMatcher;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +55,8 @@ pub struct Rule {
     pub description: Option<String>,
     pub reason: Option<String>,
     pub fields: Vec<FieldCondition>,
+    /// Command rules only: every path-like value in the segment must be under one of these
+    pub paths_under: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -138,7 +140,7 @@ impl Policy {
         }
 
         let analysis = match lookup(payload, self.shell_tool.command_path).and_then(Value::as_str) {
-            Some(command) => shell::analyse(command, &context.home, &self.shell),
+            Some(command) => shell::analyse(command, &context.home, &call.cwd, &self.shell),
             None => Analysis::unsupported("no command string in the payload"),
         };
         matches.extend(
@@ -160,7 +162,7 @@ impl Policy {
                 let segment_matches: Vec<Match> = self
                     .command_rules
                     .iter()
-                    .filter(|rule| rule.matches_value(&value, &call.cwd, context))
+                    .filter(|rule| rule.matches_segment(segment, &value, &call.cwd, context))
                     .map(|rule| rule.to_match(Some(i + 1), &format!(" — in \"{}\"", segment.text)))
                     .collect();
                 let decision = segment_matches.iter().map(|m| m.decision).max();
@@ -213,18 +215,70 @@ fn floor_match(construct: &Construct, analysis: &Analysis) -> Match {
     }
 }
 
+/// Where relative paths in a value resolve
+struct Location<'a> {
+    /// The payload cwd, which `{cwd}` in configured directories stands for
+    cwd: &'a Path,
+    /// Every directory a relative path might be relative to
+    dirs: &'a [PathBuf],
+}
+
+impl Location<'_> {
+    /// Whether `path` is under one of `allowed`, whichever directory it is relative to
+    fn is_under(&self, path: &str, allowed: &[String], context: &Context) -> bool {
+        let allowed: Vec<PathBuf> = allowed
+            .iter()
+            .map(|dir| {
+                let dir = paths::expand_dir(dir, &context.home, self.cwd);
+                paths::resolve(&dir, self.cwd)
+            })
+            .collect();
+        self.dirs.iter().all(|from| {
+            let target = paths::resolve(Path::new(path), from);
+            allowed.iter().any(|dir| target.starts_with(dir))
+        })
+    }
+}
+
 impl Rule {
     fn matches_call(&self, payload: &Value, call: &ToolCall, context: &Context) -> bool {
+        let location = Location {
+            cwd: &call.cwd,
+            dirs: std::slice::from_ref(&call.cwd),
+        };
         self.tool
             .as_ref()
             .is_none_or(|tool| tool.is_match(&call.tool_name))
-            && self.matches_value(payload, &call.cwd, context)
+            && self.matches_value(payload, &location, context)
     }
 
-    fn matches_value(&self, value: &Value, cwd: &Path, context: &Context) -> bool {
+    /// `value` is the segment as JSON
+    fn matches_segment(
+        &self,
+        segment: &Segment,
+        value: &Value,
+        cwd: &Path,
+        context: &Context,
+    ) -> bool {
+        let location = Location {
+            cwd,
+            dirs: &segment.dirs,
+        };
+        let paths_under = || {
+            self.paths_under.is_empty()
+                || segment.path_like().is_some_and(|paths| {
+                    paths
+                        .iter()
+                        .all(|path| location.is_under(path, &self.paths_under, context))
+                })
+        };
+        self.matches_value(value, &location, context) && paths_under()
+    }
+
+    fn matches_value(&self, value: &Value, location: &Location<'_>, context: &Context) -> bool {
         self.fields
             .iter()
-            .all(|field| field.matches(value, cwd, context))
+            .all(|field| field.matches(value, location, context))
     }
 
     pub fn label(&self) -> String {
@@ -255,7 +309,7 @@ impl Rule {
 }
 
 impl FieldCondition {
-    fn matches(&self, payload: &Value, cwd: &Path, context: &Context) -> bool {
+    fn matches(&self, payload: &Value, location: &Location<'_>, context: &Context) -> bool {
         let value = lookup(payload, &self.path);
         let text = value.and_then(as_text);
         self.matchers.iter().all(|matcher| match (matcher, &text) {
@@ -267,13 +321,7 @@ impl FieldCondition {
             }
             (FieldMatcher::Equals(expected), Some(text)) => text == expected,
             (FieldMatcher::Glob(glob), Some(text)) => glob.is_match(text.as_ref()),
-            (FieldMatcher::Under(dirs), Some(text)) => {
-                let target = paths::resolve(Path::new(text.as_ref()), cwd);
-                dirs.iter().any(|dir| {
-                    let dir = paths::expand_dir(dir, &context.home, cwd);
-                    target.starts_with(paths::resolve(&dir, cwd))
-                })
-            }
+            (FieldMatcher::Under(dirs), Some(text)) => location.is_under(text, dirs, context),
         })
     }
 }

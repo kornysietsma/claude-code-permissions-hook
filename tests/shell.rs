@@ -5,8 +5,10 @@ mod common;
 use common::run_with_config;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use std::fs;
 use std::path::Path;
-use tool_gate_hook::{Agent, Outcome};
+use tempfile::TempDir;
+use tool_gate_hook::{Agent, Context, Outcome, run};
 
 fn shell_payload(agent: Agent, command: &str) -> String {
     agent.shell_payload(command, Path::new("/tmp")).to_string()
@@ -505,12 +507,161 @@ fn shells_and_commands_that_run_other_commands_ask_even_when_allowed() {
 }
 
 #[test]
-fn a_deny_beats_a_shell_reentry_floor() {
+fn a_deny_beats_shell_reentry_and_cd_floors() {
     assert_eq!(decision_allowing_everything("bash x; rm -rf /").0, "deny");
+    assert_eq!(decision_allowing_everything("cd /; rm -rf x").0, "deny");
 }
 
 #[test]
 fn find_without_actions_can_be_allowed() {
     assert_eq!(decision("find . -name '*.rs'").as_deref(), Some("allow"));
     assert_eq!(decision("find . -delete").as_deref(), Some("ask"));
+}
+
+const PATHS_CONFIG: &str = r#"
+[[command_rule]]
+decision = "allow"
+description = "rm in the project"
+match.name = { equals = "rm" }
+paths_under = ["{cwd}"]
+
+[[command_rule]]
+decision = "allow"
+description = "cp in the project"
+match.name = { equals = "cp" }
+paths_under = ["{cwd}"]
+
+[[command_rule]]
+decision = "allow"
+description = "trash in the scratch directory"
+match.name = { equals = "trash" }
+paths_under = ["~/scratch"]
+
+[[command_rule]]
+decision = "allow"
+description = "downloads into the project"
+match.text = { regex = '^curl -o ' }
+paths_under = ["{cwd}"]
+
+[[command_rule]]
+decision = "allow"
+description = "project scripts"
+match.name = { regex = '^\.', under = ["{cwd}"] }
+
+[[command_rule]]
+decision = "allow"
+description = "listing"
+match.name = { equals = "ls" }
+"#;
+
+/// A project with `sub/sub2/` and a `link` to outside it, and a home directory
+struct Project {
+    root: TempDir,
+}
+
+impl Project {
+    fn new() -> Self {
+        let root = TempDir::new().unwrap();
+        fs::create_dir_all(root.path().join("project/sub/sub2")).unwrap();
+        fs::create_dir_all(root.path().join("home/scratch")).unwrap();
+        fs::create_dir_all(root.path().join("outside")).unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("outside"),
+            root.path().join("project/link"),
+        )
+        .unwrap();
+        Project { root }
+    }
+
+    fn decision(&self, command: &str) -> Option<String> {
+        let config = self.root.path().join("claude.toml");
+        fs::write(&config, PATHS_CONFIG).unwrap();
+        let cwd = self.root.path().join("project");
+        let payload = Agent::Claude.shell_payload(command, &cwd).to_string();
+        let context = Context::new(self.root.path().join("home"));
+        run(Agent::Claude, &config, &payload, &context)
+            .output
+            .map(|output| output_field(Agent::Claude, &output, "permissionDecision"))
+    }
+}
+
+#[test]
+fn paths_under_allows_only_paths_inside() {
+    let project = Project::new();
+    for (command, expected) in [
+        ("rm build/x", Some("allow")),
+        ("rm -f ./x sub/y", Some("allow")),
+        ("rm /etc/x", None),
+        ("rm ../x", None),
+        ("rm --out=/etc/x", None),
+        ("rm -o/etc/x", None),
+        ("cp a b > /etc/x", None),
+        ("cp a b > out.txt", Some("allow")),
+        ("rm x 2>&1 > /dev/null", Some("allow")),
+        ("rm link/x", None),
+        ("curl -o page.html https://example.com/x", Some("allow")),
+        ("curl -o /etc/page.html https://example.com/x", None),
+        ("trash ~/x", None),
+        ("trash ~/scratch/x", Some("allow")),
+    ] {
+        assert_eq!(project.decision(command).as_deref(), expected, "{command}");
+    }
+}
+
+#[test]
+fn cd_into_the_project_is_followed() {
+    let project = Project::new();
+    for (command, expected) in [
+        ("cd sub && rm x", Some("allow")),
+        ("cd sub && cd sub2 && rm x", Some("allow")),
+        ("cd sub && rm ../../x", None),
+        ("cd sub && ./run.sh", Some("allow")),
+        ("cd sub && ../../evil.sh", None),
+        ("cd sub", None),
+        ("pushd sub && ls", Some("allow")),
+    ] {
+        assert_eq!(project.decision(command).as_deref(), expected, "{command}");
+    }
+}
+
+#[test]
+fn a_cd_that_may_not_have_happened_is_not_trusted() {
+    let project = Project::new();
+    // The shell may still be in the project root: cd can fail, and a subshell's cd ends with it
+    for command in [
+        "cd sub && rm ../x",
+        "cd missing; rm ../x",
+        "(cd sub); rm ../x",
+        "cd sub || rm ../x",
+        "echo $(cd sub) && rm ../x",
+    ] {
+        assert_ne!(
+            project.decision(command).as_deref(),
+            Some("allow"),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn other_directory_changes_ask() {
+    let project = Project::new();
+    for command in [
+        "cd /tmp && rm x",
+        "cd && ls",
+        "cd - && ls",
+        "cd -P sub && ls",
+        "cd ../ && ls",
+        "cd link && ls",
+        "cd $D && ls",
+        "cd a b && ls",
+        "popd && ls",
+        "env cd sub && ls",
+    ] {
+        assert_eq!(
+            project.decision(command).as_deref(),
+            Some("ask"),
+            "{command}"
+        );
+    }
 }

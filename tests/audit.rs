@@ -189,6 +189,25 @@ fn assignment_only_segments_are_neutral() {
 }
 
 #[test]
+fn segments_after_a_cd_show_every_possible_directory() {
+    let project = TempDir::new().unwrap();
+    fs::create_dir(project.path().join("sub")).unwrap();
+    let cwd = fs::canonicalize(project.path()).unwrap();
+    let mut payload: Value =
+        serde_json::from_str(&bash_with_command("ls && cd sub && ls")).unwrap();
+    payload["cwd"] = json!(cwd);
+    let record = run_claude("all", "", &payload.to_string())
+        .record()
+        .unwrap();
+
+    let segments = &record["shell"]["segments"];
+    assert_eq!(segments[0].get("dirs"), None);
+    assert_eq!(segments[1]["decision"], "neutral");
+    assert_eq!(segments[1].get("dirs"), None);
+    assert_eq!(segments[2]["dirs"], json!([cwd, cwd.join("sub")]));
+}
+
+#[test]
 fn constructs_without_a_segment_leave_it_out() {
     let record = run_claude("matched", ALLOW_BASH, &bash_with_command("echo 'open"))
         .record()

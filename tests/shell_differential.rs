@@ -67,7 +67,12 @@ fn shell_words(shell: &str, args: &[&str], command: &str) -> Option<Vec<String>>
 }
 
 fn our_args(command: &str) -> Vec<String> {
-    let analysis = analyse(command, Path::new(HOME), &Settings::default());
+    let analysis = analyse(
+        command,
+        Path::new(HOME),
+        Path::new("/tmp"),
+        &Settings::default(),
+    );
     assert_eq!(analysis.constructs, vec![], "{command}");
     assert_eq!(analysis.segments.len(), 1, "{command}");
     analysis.segments[0].args.clone()
@@ -88,7 +93,12 @@ fn zsh_and_bash_split_words_as_we_do() {
 #[test]
 fn words_the_shells_may_expand_are_never_static() {
     for command in DISAGREED {
-        let analysis = analyse(command, Path::new(HOME), &Settings::default());
+        let analysis = analyse(
+            command,
+            Path::new(HOME),
+            Path::new("/tmp"),
+            &Settings::default(),
+        );
         assert!(
             analysis.constructs.iter().any(|c| c.kind.is_floor()),
             "{command}"

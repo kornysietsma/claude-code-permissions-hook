@@ -93,8 +93,24 @@ fn mermaid_chained_commands_are_allowed_only_if_every_part_is() {
 }
 
 #[test]
+fn mermaid_downloads_stay_in_their_directories() {
+    assert!(allowed(bash(
+        "curl -s -L -o /tmp/mermaid-download/x.zip https://example.com/x.zip"
+    )));
+    assert!(allowed(bash(
+        "mv /tmp/mermaid-download/x.svg /tmp/mermaid/x.svg"
+    )));
+    assert_eq!(bash("mv /tmp/mermaid-download/x.svg ~/x.svg"), None);
+    assert_eq!(
+        bash("curl -s -L -o /tmp/mermaid-download/../x https://example.com/x"),
+        None
+    );
+}
+
+#[test]
 fn mermaid_parent_directory_escapes_fall_through_to_the_user() {
     assert_eq!(bash("rm -f /tmp/mermaid/../important"), None);
+    assert_eq!(bash("rm -f /tmp/mermaid/a.png /etc/passwd"), None);
     assert_eq!(file("Write", "/tmp/mermaid/../outside.txt"), None);
     assert_eq!(file("Read", "/etc/passwd"), None);
 }

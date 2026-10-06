@@ -4,6 +4,7 @@
 mod words;
 mod wrappers;
 
+use crate::paths;
 use brush_parser::ast::{
     Assignment, AssignmentName, AssignmentValue, Command, CommandPrefixOrSuffixItem,
     CompoundCommand, CompoundList, CompoundListItem, IoFileRedirectKind, IoFileRedirectTarget,
@@ -15,11 +16,15 @@ use regex::Regex;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use words::NotStatic;
 
 /// Substitutions nested deeper than this are unsupported
 const MAX_DEPTH: usize = 16;
+
+/// More possible directories than this (from many `cd`s) is a `cd` floor
+const MAX_DIRS: usize = 16;
 
 /// Builtins whose `NAME=value` arguments set variables
 const DECLARATIONS: [&str; 5] = ["export", "declare", "typeset", "local", "readonly"];
@@ -46,6 +51,8 @@ pub enum SegmentKind {
     Command,
     /// Only assignments (`FOO=1`): needs no command rule
     AssignmentOnly,
+    /// `cd` or `pushd` to a static directory inside the cwd
+    Cd,
 }
 
 /// One simple command, as rules see it
@@ -62,6 +69,10 @@ pub struct Segment {
     pub wrappers: Vec<String>,
     /// The command as parsed, for the audit log
     pub source: String,
+    /// Every directory the shell might be in when this runs: the cwd, plus each earlier `cd`
+    /// target, as a `cd` can fail or be undone at the end of a subshell. Shown only after a `cd`.
+    #[serde(skip_serializing_if = "only_the_cwd")]
+    pub dirs: Vec<PathBuf>,
 }
 
 impl Segment {
@@ -69,10 +80,43 @@ impl Segment {
     pub fn is_neutral(&self) -> bool {
         match self.kind {
             SegmentKind::Command => false,
-            SegmentKind::AssignmentOnly => true,
+            SegmentKind::AssignmentOnly | SegmentKind::Cd => true,
         }
     }
+
+    /// The values that name files: args with a `/` or starting with `.` or `~` (or that value
+    /// of a `--opt=value` arg), and redirect targets other than fds and `/dev/null`. `None`
+    /// when an arg might hide a path we can't pick out, such as `-o/etc/x`.
+    pub fn path_like(&self) -> Option<Vec<&str>> {
+        let looks_like_path = |value: &str| {
+            (value.contains('/') || value.starts_with(['.', '~'])) && !URL.is_match(value)
+        };
+        let mut paths = vec![];
+        for arg in &self.args {
+            let value = match arg.strip_prefix("--").and_then(|opt| opt.split_once('=')) {
+                Some((_, value)) => value,
+                None if arg.starts_with('-') && arg.contains('/') => return None,
+                None => arg,
+            };
+            if looks_like_path(value) {
+                paths.push(value);
+            }
+        }
+        let targets = self.redirects.iter().filter(|redirect| match redirect.op {
+            "<<" | "<<-" | "<<<" => false,
+            ">&" | "<&" => !is_fd(&redirect.target),
+            _ => redirect.target != "/dev/null",
+        });
+        paths.extend(targets.map(|redirect| redirect.target.as_str()));
+        Some(paths)
+    }
 }
+
+fn only_the_cwd(dirs: &[PathBuf]) -> bool {
+    dirs.len() <= 1
+}
+
+static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new("^[A-Za-z][A-Za-z0-9+.-]*://").unwrap());
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Redirect {
@@ -92,6 +136,7 @@ pub enum ConstructKind {
     EnvAssign,
     ShellReentry,
     ExecTool,
+    Cd,
     Substitution,
     Heredoc,
     Pipe,
@@ -111,6 +156,7 @@ impl ConstructKind {
             ConstructKind::EnvAssign => "env_assign",
             ConstructKind::ShellReentry => "shell_reentry",
             ConstructKind::ExecTool => "exec_tool",
+            ConstructKind::Cd => "cd",
             ConstructKind::Substitution => "substitution",
             ConstructKind::Heredoc => "heredoc",
             ConstructKind::Pipe => "pipe",
@@ -130,7 +176,8 @@ impl ConstructKind {
             | ConstructKind::DynamicCommand
             | ConstructKind::EnvAssign
             | ConstructKind::ShellReentry
-            | ConstructKind::ExecTool => true,
+            | ConstructKind::ExecTool
+            | ConstructKind::Cd => true,
             ConstructKind::Substitution
             | ConstructKind::Heredoc
             | ConstructKind::Pipe
@@ -152,6 +199,7 @@ impl ConstructKind {
                 "a command that runs shell code or changes how later commands run"
             }
             ConstructKind::ExecTool => "a command that can run other commands or delete files",
+            ConstructKind::Cd => "a directory change tool-gate-hook can't follow",
             ConstructKind::Substitution => "a command substitution",
             ConstructKind::Heredoc => "a heredoc or here-string",
             ConstructKind::Pipe => "a pipe",
@@ -195,10 +243,12 @@ impl Analysis {
     }
 }
 
-pub fn analyse(command: &str, home: &Path, settings: &Settings) -> Analysis {
+pub fn analyse(command: &str, home: &Path, cwd: &Path, settings: &Settings) -> Analysis {
     let options = ParserOptions::default();
     let mut walker = Walker {
         home,
+        cwd,
+        dirs: vec![cwd.to_path_buf()],
         settings,
         options: &options,
         depth: 0,
@@ -225,6 +275,9 @@ enum Role {
 
 struct Walker<'a> {
     home: &'a Path,
+    cwd: &'a Path,
+    /// Every directory the shell might be in at this point of the walk
+    dirs: Vec<PathBuf>,
     settings: &'a Settings,
     options: &'a ParserOptions,
     /// How many substitutions deep the walk is
@@ -398,6 +451,7 @@ impl Walker<'_> {
         }
         let mut segment_value = Segment {
             kind: SegmentKind::Command,
+            dirs: self.dirs.clone(),
             text: String::new(),
             name: String::new(),
             args: vec![],
@@ -410,6 +464,7 @@ impl Walker<'_> {
             Some(name) => {
                 self.unwrap(&mut segment_value, name, args, segment);
                 self.command_floors(&segment_value, segment);
+                self.cd(&mut segment_value, segment);
                 self.analysis.segments.push(segment_value);
             }
             None if assigns => {
@@ -517,6 +572,66 @@ impl Walker<'_> {
         {
             self.floor(ConstructKind::ExecTool, segment, format!("find {action}"));
         }
+    }
+
+    /// A `cd` or `pushd` into the cwd is neutral and adds its target to the possible
+    /// directories; any other directory change is a floor
+    fn cd(&mut self, command: &mut Segment, segment: Option<usize>) {
+        if !matches!(command.name.as_str(), "cd" | "pushd" | "popd") {
+            return;
+        }
+        match self.cd_targets(command, segment) {
+            Ok(targets) => {
+                command.kind = SegmentKind::Cd;
+                for target in targets {
+                    if !self.dirs.contains(&target) {
+                        self.dirs.push(target);
+                    }
+                }
+            }
+            Err(why) => self.floor(ConstructKind::Cd, segment, why),
+        }
+    }
+
+    fn cd_targets(
+        &self,
+        command: &Segment,
+        segment: Option<usize>,
+    ) -> Result<Vec<PathBuf>, String> {
+        let name = &command.name;
+        if name == "popd" {
+            return Err(name.clone());
+        }
+        if !command.wrappers.is_empty() {
+            return Err(format!("{name} run by {}", command.wrappers.join(" ")));
+        }
+        let [dir] = command.args.as_slice() else {
+            return Err(format!("{name} with {} arguments", command.args.len()));
+        };
+        if dir.is_empty() || dir.starts_with(['-', '+']) {
+            return Err(format!("{name} {}", words::quote(dir)));
+        }
+        let not_static = self
+            .analysis
+            .constructs
+            .iter()
+            .any(|c| c.segment == segment && c.kind.is_floor());
+        if not_static {
+            return Err(format!("{name} to a directory only the shell can work out"));
+        }
+        let root = paths::resolve(self.cwd, self.cwd);
+        let targets: Vec<PathBuf> = self
+            .dirs
+            .iter()
+            .map(|from| paths::resolve(Path::new(dir), from))
+            .collect();
+        if targets.iter().any(|target| !target.starts_with(&root)) {
+            return Err(format!("{name} outside the cwd: {dir}"));
+        }
+        if self.dirs.len() + targets.len() > MAX_DIRS {
+            return Err(format!("more than {MAX_DIRS} possible directories"));
+        }
+        Ok(targets)
     }
 
     fn check_env_name(&mut self, name: &str, segment: Option<usize>) {
@@ -754,7 +869,12 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     fn analyse_here(command: &str) -> Analysis {
-        analyse(command, Path::new("/home/me"), &Settings::default())
+        analyse(
+            command,
+            Path::new("/home/me"),
+            Path::new("/work/proj"),
+            &Settings::default(),
+        )
     }
 
     fn texts(analysis: &Analysis) -> Vec<&str> {
@@ -797,6 +917,7 @@ mod tests {
             analysis.segments,
             vec![Segment {
                 kind: SegmentKind::Command,
+
                 text: "./scripts/thing.py --out 'my file.txt'".into(),
                 name: "./scripts/thing.py".into(),
                 args: vec!["--out".into(), "my file.txt".into()],
@@ -808,6 +929,7 @@ mod tests {
                 }],
                 wrappers: vec![],
                 source: r#"./scripts/thing.py --out "my file.txt" > log.txt"#.into(),
+                dirs: vec![PathBuf::from("/work/proj")],
             }]
         );
     }
@@ -1008,7 +1130,12 @@ mod tests {
         let settings = Settings {
             safe_env: vec![Regex::new("^RUST_LOG$").unwrap()],
         };
-        analyse(command, Path::new("/home/me"), &settings)
+        analyse(
+            command,
+            Path::new("/home/me"),
+            Path::new("/work/proj"),
+            &settings,
+        )
     }
 
     #[test]
@@ -1155,6 +1282,100 @@ mod tests {
         ] {
             assert_eq!(floors(&analyse_here(command)), expected, "{command}");
         }
+    }
+
+    fn path_like(command: &str) -> Option<Vec<String>> {
+        let analysis = analyse_here(command);
+        let paths = analysis.segments[0].path_like()?;
+        Some(paths.into_iter().map(str::to_owned).collect())
+    }
+
+    #[test]
+    fn path_like_values_are_args_and_redirect_targets_that_name_files() {
+        let some = |paths: &[&str]| Some(paths.iter().map(|p| (*p).to_owned()).collect());
+        assert_eq!(
+            path_like("cp -r src/a .hidden ~/x plain --out=b/c --flag=d -v"),
+            some(&["src/a", ".hidden", "/home/me/x", "b/c"])
+        );
+        assert_eq!(
+            path_like("curl -o out https://example.com/a file://x/y"),
+            some(&[])
+        );
+        assert_eq!(
+            path_like("cat < in > out 2>&1 2> err >&3 &> /dev/null <<< x/y"),
+            some(&["in", "out", "err"])
+        );
+        assert_eq!(path_like("cat <<EOF\nx\nEOF"), some(&[]));
+        assert_eq!(path_like("gcc -I/usr/include x.c"), None);
+    }
+
+    #[test]
+    fn cd_into_the_cwd_is_neutral_and_adds_a_possible_directory() {
+        let analysis = analyse_here("cd sub && cd sub2; ls");
+
+        assert_eq!(floors(&analysis), vec![]);
+        assert!(analysis.segments[0].is_neutral());
+        assert!(analysis.segments[1].is_neutral());
+        assert_eq!(
+            analysis.segments[2].dirs,
+            [
+                "/work/proj",
+                "/work/proj/sub",
+                "/work/proj/sub2",
+                "/work/proj/sub/sub2"
+            ]
+            .map(PathBuf::from)
+        );
+        assert_eq!(analysis.segments[0].dirs, [PathBuf::from("/work/proj")]);
+    }
+
+    #[test]
+    fn other_directory_changes_are_floors() {
+        for (command, detail) in [
+            ("cd", "cd with 0 arguments"),
+            ("cd a b", "cd with 2 arguments"),
+            ("cd -", "cd -"),
+            ("cd -P x", "cd with 2 arguments"),
+            ("pushd +1", "pushd +1"),
+            ("cd ''", "cd ''"),
+            ("popd", "popd"),
+            ("cd /tmp", "cd outside the cwd: /tmp"),
+            ("cd ..", "cd outside the cwd: .."),
+            ("cd ~", "cd outside the cwd: /home/me"),
+            ("time cd x", "cd run by time"),
+            ("nice cd x", "cd run by nice"),
+        ] {
+            let analysis = analyse_here(command);
+            assert_eq!(
+                floors(&analysis),
+                vec![("cd", Some(0), detail)],
+                "{command}"
+            );
+            assert!(!analysis.segments[0].is_neutral(), "{command}");
+        }
+        let dynamic = analyse_here("cd $D");
+        assert_eq!(
+            floors(&dynamic).last(),
+            Some(&(
+                "cd",
+                Some(0),
+                "cd to a directory only the shell can work out"
+            ))
+        );
+    }
+
+    #[test]
+    fn too_many_possible_directories_is_a_floor() {
+        let command = (1..=5)
+            .map(|i| format!("cd d{i}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let analysis = analyse_here(&command);
+
+        assert_eq!(
+            floors(&analysis),
+            vec![("cd", Some(4), "more than 16 possible directories")]
+        );
     }
 
     #[test]

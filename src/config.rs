@@ -90,6 +90,7 @@ struct RawCommandRule {
     reason: Option<String>,
     #[serde(default, rename = "match")]
     fields: BTreeMap<String, RawFieldMatch>,
+    paths_under: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +215,7 @@ fn compile_rule(
         description: raw.description,
         reason: raw.reason,
         fields: compile_fields(raw.fields, patterns, &label)?,
+        paths_under: vec![],
     })
 }
 
@@ -224,8 +226,11 @@ fn compile_command_rule(
 ) -> Result<Rule> {
     let label = label_for(RuleKind::CommandRule, index, &table);
     let raw: RawCommandRule = table.try_into().with_context(|| label.clone())?;
-    if raw.fields.is_empty() {
+    if raw.fields.is_empty() && raw.paths_under.is_none() {
         bail!("{label}: no match conditions, so it would match every command");
+    }
+    if raw.paths_under.as_ref().is_some_and(Vec::is_empty) {
+        bail!("{label}: paths_under: empty list");
     }
     Ok(Rule {
         kind: RuleKind::CommandRule,
@@ -235,6 +240,7 @@ fn compile_command_rule(
         description: raw.description,
         reason: raw.reason,
         fields: compile_fields(raw.fields, patterns, &label)?,
+        paths_under: raw.paths_under.unwrap_or_default(),
     })
 }
 

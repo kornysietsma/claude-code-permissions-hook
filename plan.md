@@ -10,9 +10,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Status
 
-- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 6 (`git log` has the hash).
-- **Done:** steps 1 to 6.
-- **Next:** step 7, `cd` tracking and `paths_under`.
+- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 7 (`git log` has the hash).
+- **Done:** steps 1 to 7.
+- **Next:** step 8, construct rules.
 
 ### Working on this branch
 
@@ -27,22 +27,22 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 - **Local corpus** (gitignored, may contain private paths):
   - build it with `scripts/shell-corpus.sh ~/.local/share/tool-gate-hook/claude.jsonl`, which writes `tests/fixtures/shell/corpus.local.jsonl` (one JSON string per line);
   - summarise it with `cargo test --test shell_corpus -- --ignored --nocapture`, which lists each floor's details per command;
-  - after step 6, 120 of 162 commands hit no floor. Most floors are `$VAR` from `S=…` assignments (20 `env_assign`), and globs. The 8 `shell_reentry` floors are all `bash script.sh` or `bash -n`.
+  - after step 7, 120 of 162 commands hit no floor (a `cd` floor only adds to commands that already had one). Most floors are `$VAR` from `S=…` assignments (20 `env_assign`), and globs. The 8 `shell_reentry` floors are all `bash script.sh` or `bash -n`.
 - **Corpus expectations** are regenerated with `explain`, an empty config and `--payload` (build each payload with `jq`, as commands can contain newlines), then reviewed with `diff`.
 - **`explain`** is the quickest manual check: `cargo run -q -- explain --agent claude --config examples/claude.toml --cwd /tmp 'COMMAND' | jq …`. An empty config file shows the bare analysis.
 
 ## Technical context
 
-### Code shape (as of step 6)
+### Code shape (as of step 7)
 
 | Module | Contents | Still to come |
 |--------|----------|---------------|
-| `src/shell/mod.rs` | `analyse(command, home, settings) -> Analysis`; `Settings { safe_env }` (the `[shell]` config); the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment` (with `kind: SegmentKind`, `#[serde(skip)]`, and `is_neutral()`), `SegmentKind::{Command, AssignmentOnly}`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`, `EnvAssign`, `ShellReentry`, `ExecTool`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording; `value(raw, shown, …)` classifies `raw` but reports `shown` (an assignment's value is reported as the whole `NAME=value`). `simple()` puts prefix assignments in `env` (`assignment()`), checks names with `check_env_name()` (prefix, `env NAME=…`, and the `DECLARATIONS` builtins' args via `assigned_name()`), and calls `unwrap()`, then `command_floors()` (`SHELL_REENTRY` names and `xargs`, and `find` with `FIND_ACTIONS`, by the basename of the unwrapped name). `file_redirect()` records `redirect_read`/`redirect_write`. | Floor `Cd` (7); `cd` and the effective directory (7), as `SegmentKind::Cd` (add it to `is_neutral`). `analyse` will need `cwd`. |
+| `src/shell/mod.rs` | `analyse(command, home, cwd, settings) -> Analysis`; `Settings { safe_env }` (the `[shell]` config); the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment` (with `kind: SegmentKind`, `#[serde(skip)]`, and `dirs: Vec<PathBuf>`, serialised last and only when there is more than the cwd; `is_neutral()`; `path_like() -> Option<Vec<&str>>`), `SegmentKind::{Command, AssignmentOnly, Cd}`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`, `EnvAssign`, `ShellReentry`, `ExecTool`, `Cd`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording; `value(raw, shown, …)` classifies `raw` but reports `shown` (an assignment's value is reported as the whole `NAME=value`). `simple()` puts prefix assignments in `env` (`assignment()`), checks names with `check_env_name()` (prefix, `env NAME=…`, and the `DECLARATIONS` builtins' args via `assigned_name()`), and calls `unwrap()`, then `command_floors()` and `cd()` (`cd_targets()` adds to the walker's `dirs`, capped at `MAX_DIRS` = 16; also `SHELL_REENTRY` names and `xargs`, and `find` with `FIND_ACTIONS`, by the basename of the unwrapped name). `file_redirect()` records `redirect_read`/`redirect_write`. | Recording `dirs` on a group's own `redirect_write` constructs (8). |
 | `src/shell/wrappers.rs` | `unwrap(name, args) -> Result<Unwrapped { wrappers, env, name, args }, String>`: peels `env`, `timeout`, `nice`, `nohup` and `time` (bare names only), with each one's option grammar; `Err` is the `unsupported` detail. Unit tests. | |
 | `src/shell/words.rs` | `analyse(raw, home, options) -> WordInfo { value: Result<String, NotStatic>, substitutions }`, `analyse_heredoc(raw, options)`; `NotStatic::{Expansion, Unsupported}(why)`; `$'…'` decoding; `quote()` for `text`. Unit tests. | |
 | `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`; `Agent::shell_payload(command, cwd)`, a minimal payload used by `explain` and tests. | |
-| `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[shell]` (`RawShell`, `safe_env` compiled with `compile_regexes`, so `@patterns` work); `[[command_rule]]`; the errors for an allow `[[rule]]` that can match the shell tool, and for a command rule with no conditions. | `paths_under` (7), `[[construct_rule]]` (8). |
-| `src/policy.rs` | `Policy { rules, command_rules, shell_tool, shell: shell::Settings }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }` (`None` for neutral segments, which rules never see); the combiner in `Policy::evaluate` skips neutral segments and needs at least one non-neutral one to allow; `floor_match`. | `paths_under` (7), `ConstructRule` kind and evaluation (8). |
+| `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[shell]` (`RawShell`, `safe_env` compiled with `compile_regexes`, so `@patterns` work); `[[command_rule]]` with `paths_under`; the errors for an allow `[[rule]]` that can match the shell tool, for a command rule with no `match` and no `paths_under`, and for an empty `paths_under`. | `[[construct_rule]]` (8). |
+| `src/policy.rs` | `Policy { rules, command_rules, shell_tool, shell: shell::Settings }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`; `paths_under` empty for `[[rule]]`s); `Location { cwd, dirs }` and `is_under`; `Rule::matches_segment` (fields, then `paths_under`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }` (`None` for neutral segments, which rules never see); the combiner in `Policy::evaluate` skips neutral segments and needs at least one non-neutral one to allow; `floor_match`. | `ConstructRule` kind and evaluation (8). |
 | `src/auditing.rs` | `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated; a neutral segment's `decision` is `"neutral"`); the caller checks the level with `AuditConfig::records`. `AuditRecord::for_explanation(…, truncated)` adds `reason`. `is_truncated`, `truncate_json_strings`. | |
 | `src/validate.rs` | Summary lines for rules and command rules. | Construct rules, `safe_env`, segment-field warnings (9). |
 | `src/lib.rs`, `src/main.rs` | `run`, `validate`, and `explain` (`lib::explain(agent, config_path, input, context) -> Result<Explanation { record, warnings }>`; the input is a payload or an audit record; `--payload -` reads stdin). | |
@@ -63,7 +63,7 @@ Tests:
 - **Two-level parsing.** `brush_parser::Parser::new(Cursor::new(cmd), &ParserOptions::default()).parse_program()` gives the AST, where words are raw strings (`ast::Word { value, loc }`). `brush_parser::word::parse(raw, &options)` splits a word into `WordPiece`s. Default options are bash mode, with extended globbing on: `@(…)` parses as text, which the glob check catches.
 - **Allow-listed walker with exhaustive matches** on brush's enums (no `_ =>` arms), so a brush upgrade that adds syntax fails to compile instead of being silently allowed. brush-parser is pinned to `=0.4.0`.
 - **Segment order**: textual, except that a command comes before the commands substituted into it (substitutions are queued as `Pending` and walked after the segment is pushed, so segment indexes stay stable).
-- **Segments are matched as JSON**: `serde_json::to_value(&segment)` goes through the existing `FieldCondition` code. `FieldCondition::matches(value, cwd, context)` takes a cwd so that, from step 7, `under` can use a segment's effective directory.
+- **Segments are matched as JSON**: `serde_json::to_value(&segment)` goes through the existing `FieldCondition` code. `FieldCondition::matches(value, location, context)` takes a `Location { cwd, dirs }`: `{cwd}` in configured directories is always the payload cwd, and a relative path must pass from every one of `dirs` (a segment's possible directories, or just the cwd for `[[rule]]`s). `Location::is_under` is shared by `under` and `paths_under`.
 - **Combiner** (`Policy::evaluate`): deny or ask if any match has it (the first most restrictive match decides); else allow if there is at least one segment and every segment's decision is allow (the first allow match decides); else passthrough. When steps 5 and 7 add neutral segments (assignment-only, `cd`), they must be skipped in the "every segment" check, and a command with only neutral segments passes through.
 - **Rule indexes are per kind**, because TOML deserialises each array of tables separately and loses their relative order.
 - **Floor details** are short and specific (`for loop`, `variable in $HOME`, `assignment FOO`), and they appear in reasons.
@@ -85,7 +85,7 @@ Tests:
 
 ## Steps
 
-### Steps 1–6 ✅
+### Steps 1–7 ✅
 
 1. **brush-parser spike.** brush-parser 0.4.0 is in.
 2. **First end-to-end slice.** Segments; command rules on `text`/`name`; the `parse_error` and `unsupported` floors; an allow `[[rule]]` on the shell tool is a config error; the examples migrated; differential tests against zsh and bash.
@@ -93,28 +93,12 @@ Tests:
 4. **Substitutions, expansions, dynamic command names.** Word classification; the `expansion` and `dynamic_command` floors; recursion into substitutions (depth 16); unquoted heredoc bodies; non-floor constructs recorded; the curated corpus; `====`-style words are static.
 5. **Wrappers, `[shell] safe_env`, `env_assign`.** Prefix and `env` assignments go to `env`; the `env_assign` floor (also for declaration builtins' args); assignment-only segments are neutral; array assignments are `unsupported`; `env`/`timeout`/`nice`/`nohup`/`time` unwrapped (bare names only); `safe_env` in the claude and copilot examples.
 6. **`shell_reentry` and `exec_tool` floors.** By the basename of the unwrapped name, so `env bash x` and `/bin/bash x` are caught; `find` only with an action that runs commands or deletes.
-
-### Step 7: `cd` tracking and `paths_under`
-
-- [ ] `analyse` takes the payload cwd. `cd` / `pushd` to a static path inside `{cwd}` is neutral (`SegmentKind::Cd`) and updates the effective directory for later segments (`Segment.cwd`, `#[serde(skip)]`). Anything else is the `Cd` floor (bare `cd`, `cd -`, `popd`, options, outside paths, non-static paths).
-- [ ] `paths_under` on command rules: path-like detection (args with `/`, or starting with `.` or `~`; the value part of `--opt=value`; redirect targets except fd dups and `/dev/null`). Resolve against the segment's effective directory with `paths::resolve`. Pass `Segment.cwd` into `matches_value` too, so `under` on segment fields agrees.
-- [ ] A `cd`-only command → passthrough.
-- [ ] Examples: replace the remaining `@parent_dir` uses (mermaid) with `paths_under`, and remove the `parent_dir` pattern.
-
-**Automated:**
-- `rm build/x` with `paths_under = ["{cwd}"]` → allow; `rm /etc/x` and `rm ../x` → passthrough;
-- `rm --out=/etc/x` → passthrough; `cp a b > /etc/x` → passthrough;
-- `cmd 2>&1 > /dev/null` → `paths_under` unaffected;
-- `cd sub && rm x` → allow; `cd sub && rm ../../x` → passthrough; `cd /tmp && rm x` → ask; `cd && ls` → ask;
-- a symlink inside the project pointing outside → passthrough (temp dir test);
-- `rm ~/x` with `paths_under = ["~/scratch"]` → passthrough, `rm ~/scratch/x` → allow (with an injected home).
-
-**Manual:** `explain 'cd src && rm -f old.rs'` with the example config and check each segment's resolution.
+7. **`cd` tracking and `paths_under`.** Segments carry every directory the shell might be in (a `cd` adds, never removes, since it can fail or be scoped to a subshell); in-cwd `cd`/`pushd` is neutral and anything else the `cd` floor; `paths_under` on command rules (URLs aren't path-like; `-o/etc/x`-style args fail the rule); `under` on segment fields checks every possible directory; the mermaid example uses `paths_under` and `parent_dir` is gone.
 
 ### Step 8: construct rules
 
 - [ ] Config: `[[construct_rule]]` with `decision`, `construct`, `description`, `reason`, and `outside` (only for `redirect_write`). Errors: allow, an unknown construct, a floor name, `outside` on another construct. Add `RuleKind::ConstructRule`.
-- [ ] Evaluation: a construct rule matches if any recorded construct of its kind is present. For `redirect_write` with `outside`, only targets not under those directories count, resolved against the segment's effective directory (the cwd for a group's own redirects, which have no segment). Matches go after the command-rule matches.
+- [ ] Evaluation: a construct rule matches if any recorded construct of its kind is present. For `redirect_write` with `outside`, only targets not under those directories count, resolved from every one of the segment's possible directories with `Location::is_under`. A group's own redirects (`( … ) > out`) have no segment, so record the walker's `dirs` at that point on the construct (they are applied before the group runs). Matches go after the command-rule matches.
 - [ ] Examples: ask on `background`; ask on `redirect_write` outside `{cwd}` and `/tmp`. Add the harmless-builtins allow (`true`, `false`, `:`, `echo`, `printf`, `test`, `[`), held back from step 2 until writes are checked.
 
 **Automated:**
@@ -172,12 +156,12 @@ Tests:
 ## Notes for later steps
 
 **From step 5 (assignments and wrappers):**
-- A neutral segment has empty `text` and `name`. Step 7's `cd` segments are neutral the same way: add `SegmentKind::Cd` and return `true` for it in `Segment::is_neutral`; the combiner and audit then need no change.
+- An assignment-only segment has empty `text` and `name`; a `cd` segment keeps them.
 - Wrappers are unwrapped only when the name is bare (`env`, not `/usr/bin/env` or `./env`, which could be anything). An absolute-path wrapper stays the command name, so it passes through unless a rule names it. Step 6's `shell_reentry` check runs on the unwrapped name, so `env bash -c …` and `timeout 5 sh x` are caught.
 - When unwrapping fails (unknown option), the segment keeps the wrapper as its name, with no `wrappers`.
 - A non-static word after a wrapper (`timeout 60 $CMD`) becomes the name, but hits `expansion` (not `dynamic_command`), since it was classified as an arg.
 - **For step 8's harmless builtins:** `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v`, and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided: handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
-- **For step 7:** bash (not zsh) tilde-expands after `=` in assignment-like args (`make CC=~/x` passes `CC=/home/…/x`); the segment shows the literal `~`. Only the `--opt=value` part is path-like, and `--opt` isn't a valid name, so `paths_under` is unaffected; keep it that way.
+- bash (not zsh) tilde-expands after `=` in assignment-like args (`make CC=~/x` passes `CC=/home/…/x`); the segment shows the literal `~`. Only the `--opt=value` part is path-like, and `--opt` isn't a valid name, so `paths_under` is unaffected; keep it that way.
 - **For step 9:** review the `env_assign` description ("a variable not listed in [shell] safe_env") with the other floor texts. Floor reasons repeat themselves when the segment is only the name, e.g. `… (sh), in "sh"` for `git diff | sh`.
 
 **Example and test facts:**
@@ -189,3 +173,6 @@ Tests:
 - About a quarter of real commands ask because of shell variables (`$f`, `$d`), globs (`docs/*.md`), `for` loops and `S=…` assignments. Agents should spell paths out when they want a command auto-allowed.
 - `echo ====` is allowed, but under zsh (Claude Code's shell) it fails with "=== not found" and skips the rest of the line, so agents should use `echo ---`.
 - To `explain` a command from an audit record, pipe the line in: `tail -1 audit.jsonl | tool-gate-hook explain --agent claude --payload -`.
+- After a `cd`, a path is checked from every directory the shell might be in, so `cd sub && rm ../x` never passes `paths_under`. Agents should use paths relative to the project root, or `cd` and then stay below it.
+- Known gap to document: `CDPATH` / zsh `cdpath` in the user's shell config can send `cd sub` elsewhere; the hook assumes it isn't set.
+- A scoped npm package (`npx -p @scope/pkg …`) contains `/`, so it counts as path-like and fails `paths_under`. The mermaid example's npx rule has no `paths_under` for this reason.

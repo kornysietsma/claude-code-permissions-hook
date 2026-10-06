@@ -1,16 +1,12 @@
 # Illustrative example: a tightly scoped workflow for generating Mermaid diagrams.
 # Everything the workflow needs is allowed; anything else falls through to the
 # normal permission prompt. Bash commands are checked segment by segment, so a chained
-# command is allowed only if every part is; the ".." exclusion stops an allowed path
-# prefix being escaped.
+# command is allowed only if every part is. `under` and `paths_under` resolve symlinks and
+# "..", so an allowed directory can't be escaped.
 
 [audit]
 file = "/tmp/tool-gate-hook-mermaid.jsonl"
 level = "all"
-
-[patterns]
-# Any ".." path segment
-parent_dir = '\.\.'
 
 [[rule]]
 decision = "allow"
@@ -23,7 +19,6 @@ decision = "allow"
 description = "npx mermaid-cli mmdc"
 match.text = { regex = '^npx -p @mermaid-js/mermaid-cli(@latest)? mmdc ' }
 
-# `under` resolves symlinks and ".." for us, so no parent_dir exclusion is needed for paths
 [[rule]]
 decision = "allow"
 tool = "Read|Write"
@@ -33,14 +28,17 @@ match."tool_input.file_path" = { under = ["/tmp/mermaid"] }
 [[command_rule]]
 decision = "allow"
 description = "rm mermaid test files"
-match.text = { regex = '^rm (-f )?/tmp/mermaid', not_regex = "@parent_dir" }
+match.text = { regex = '^rm (-f )?/tmp/mermaid/' }
+paths_under = ["/tmp/mermaid"]
 
 [[command_rule]]
 decision = "allow"
 description = "download into /tmp/mermaid-download"
-match.text = { regex = '^curl -s -L -o /tmp/mermaid-download', not_regex = "@parent_dir" }
+match.text = { regex = '^curl -s -L -o /tmp/mermaid-download/' }
+paths_under = ["/tmp/mermaid-download"]
 
 [[command_rule]]
 decision = "allow"
 description = "mv a downloaded file"
-match.text = { regex = '^mv /tmp/mermaid-download', not_regex = "@parent_dir" }
+match.text = { regex = '^mv /tmp/mermaid-download/' }
+paths_under = ["/tmp/mermaid-download", "/tmp/mermaid"]

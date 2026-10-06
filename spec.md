@@ -85,6 +85,7 @@ Each segment is exposed as a JSON object, used both for rule matching and in the
 - `redirects`: operator (`<`, `>`, `>>`, `<>`, `>|`, `<&`, `>&`, `&>`, `&>>`, `<<`, `<<-`, `<<<`), optional fd, and target (unquoted; the delimiter for heredocs). Redirects on a `( … )` or `{ …; }` group are copied onto every segment inside it.
 - `wrappers`: the unwrapped wrapper names, in order (audit only). The `time` keyword (`time cargo test`) is recorded here too.
 - `source`: the segment as the parser renders it (audit and reasons only). It is normalised, not a slice of the input, e.g. `>log.txt` becomes `> log.txt`.
+- `dirs`: every directory the shell might be in when the segment runs (see `cd` handling), as resolved paths. Only present after a `cd` has added one (for the audit log; not a rule-writing surface).
 
 A pipeline's `!` is ignored. A segment with no command word and only redirects (`> file`) is `unsupported`.
 
@@ -127,7 +128,7 @@ Floors are built-in and can't be configured away. Each floor contributes `ask` (
 | `dynamic_command` | the command name contains any expansion or substitution |
 | `expansion` | any arg, env value or redirect target contains parameter expansion (`$x`, `${…}`, `$1`, …), arithmetic `$((…))`, command or process substitution, an unquoted glob (`*`, `?`, `[…]`) or brace expansion (`{a,b}`, `{1..3}`), or starts with an unquoted `=` followed by something that could name a command (zsh equals expansion); also any of these in the body of a heredoc whose delimiter is unquoted (`<<EOF`; bodies of `<<'EOF'` / `<<"EOF"` are literal), and in a here-string (`<<<`) word. Quoted characters are literal. A leading `~` is not expansion. |
 | `env_assign` | an assignment whose name doesn't match any `[shell] safe_env` regex: inline prefixes, `env NAME=…`, assignment-only segments (`PATH=./evil; cargo test`), and `NAME=value` arguments of `export`, `declare`, `typeset`, `local`, `readonly` |
-| `cd` | `cd` / `pushd` to a path that isn't static and inside `{cwd}`; bare `cd`, `cd -`, `popd`, or any `cd` option |
+| `cd` | `cd` / `pushd` to a path that isn't static and inside `{cwd}`; bare `cd`, `cd -`, `popd`, any `cd` option, a `cd` behind a wrapper, or more than 16 possible directories |
 
 In an unquoted heredoc body only `$`, backticks and `\` are special, and any `$` counts as `expansion` (even a lone one).
 
@@ -142,7 +143,11 @@ A segment with assignments and no command word (`FOO=1`) is neutral, like an in-
 
 #### `cd` handling
 
-`cd DIR` / `pushd DIR` with a static `DIR` resolving (via `paths::resolve`) inside `{cwd}` is neutral: it needs no command rule and doesn't count as a passthrough. It sets the **effective directory** used to resolve relative paths in **later segments** of the same command (for `paths_under` and `redirect_write`), in textual order. Subshell scoping is ignored: a `cd` inside `( … )` still affects later segments, which only errs towards checking against a deeper directory still under `{cwd}`. Command rules never see `cd` segments.
+`cd DIR` / `pushd DIR` with a static `DIR` resolving (via `paths::resolve`) inside `{cwd}` is neutral: it needs no command rule and doesn't count as a passthrough. Command rules never see `cd` segments.
+
+Later segments of the same command (in textual order) are checked against **every directory the shell might be in**: the cwd, plus each earlier `cd` target, resolved from each directory already possible. A `cd` never removes a directory, because it can fail (`cd missing; rm ../x`, `cd sub || rm ../x`) or be undone when its subshell ends (`(cd sub); rm ../x`, `$(cd sub)`, or a pipeline element in bash). A relative path must pass from every possible directory (for `paths_under`, `under` on segment fields, and `redirect_write`), so `cd sub && rm x` can be allowed but `cd sub && rm ../x` can't. More than 16 possible directories is a `cd` floor, as is a `cd` behind a wrapper (`env cd x`, `time cd x`).
+
+Known gap: with `CDPATH` (bash) or `cdpath` (zsh) set in the user's shell config, `cd sub` may go to another directory's `sub`. The hook can't see the shell's config, so `paths_under` after a `cd` assumes no `CDPATH`.
 
 ### Command rules
 
@@ -163,7 +168,8 @@ paths_under = ["{cwd}", "/tmp"]    # optional
   - for args of the form `--opt=value`, the `value` part, by the same test;
   - redirect targets other than fd dups (`2>&1`) and `/dev/null`.
 
-  Relative paths resolve against the effective directory (see `cd`). Short flags with attached values (`-o/etc/x`) contain `/` and are checked as a path; they fail unless that odd path is inside, which errs towards not matching.
+  Relative paths resolve against every possible directory (see `cd`). URLs (`scheme://…`) aren't path-like. A short flag with an attached value containing `/` (`-o/etc/x`, `-I/usr/include`) can't be picked apart, so the rule doesn't match the segment.
+
 
 ### Construct rules
 
@@ -218,7 +224,7 @@ Pattern references (`[patterns]`) work in all three rule kinds.
 For a shell-tool call:
 
 1. Evaluate `[[rule]]` entries against the raw payload (deny/ask only, by construction).
-2. Parse the command. On failure: `parse_error`. Walk the tree with the allow-listed walker; collect segments (in textual order, except that a command comes before the commands substituted into it), constructs and floors. Track the effective directory for `cd`.
+2. Parse the command. On failure: `parse_error`. Walk the tree with the allow-listed walker; collect segments (in textual order, except that a command comes before the commands substituted into it), constructs and floors. Track the possible directories for `cd`.
 3. For each non-`cd` segment, evaluate every command rule; the segment's decision is the highest of its matching rules (deny > ask > allow), or **none** if nothing matched.
 4. Evaluate every construct rule against the collected constructs.
 5. Combine:
@@ -239,7 +245,7 @@ Sent to the agent with every decision (Copilot and Claude show it for `deny` and
 - A rule: its `reason` if set, else the default `tool-gate-hook: <decision> by <kind> #<index> (<description>)`, where `<kind>` is `rule`, `command rule` or `construct rule`.
 - A command rule also gets ` — in "<text>"` for the segment it matched, e.g. `tool-gate-hook: ask by command rule #6 (git push) — in "git push"`.
 - A floor: `tool-gate-hook: ask — <description> (<detail>), in "<segment source>"`, leaving out the parts that don't apply. For example: `tool-gate-hook: ask — a value only the shell can work out (glob in docs/*.md), in "ls docs/*.md"`.
-- Each floor has a fixed human-readable description: `parse_error` "the command could not be parsed", `unsupported` "shell syntax that tool-gate-hook can't check", `expansion` "a value only the shell can work out", `dynamic_command` "a command name only the shell can work out", `env_assign` "a variable not listed in [shell] safe_env", `shell_reentry` "a command that runs shell code or changes how later commands run", `exec_tool` "a command that can run other commands or delete files". (To be reviewed with real examples before release.)
+- Each floor has a fixed human-readable description: `parse_error` "the command could not be parsed", `unsupported` "shell syntax that tool-gate-hook can't check", `expansion` "a value only the shell can work out", `dynamic_command` "a command name only the shell can work out", `env_assign` "a variable not listed in [shell] safe_env", `shell_reentry` "a command that runs shell code or changes how later commands run", `exec_tool` "a command that can run other commands or delete files", `cd` "a directory change tool-gate-hook can't follow". (To be reviewed with real examples before release.)
 - The detail says what triggered it: the kind of piece and the raw word, with the place when it isn't an arg or the command word. For example `variable in $HOME`, `glob in redirect *.log`, `variable in here-string $x`, `command substitution in heredoc body`, `process substitution in <(sort a)`, `for loop`, `assignment FOO`.
 - brush-parser normalises `source`, e.g. `2>&1` is rendered as `2>& 1`.
 
