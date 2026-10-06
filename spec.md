@@ -88,6 +88,8 @@ Each segment is exposed as a JSON object, used both for rule matching and in the
 
 A pipeline's `!` is ignored. A segment with no command word and only redirects (`> file`) is `unsupported`.
 
+A word that isn't static (below) keeps its raw text in `name`, `args` and `text`, e.g. `echo "latest: $D"` has the text `echo '"latest: $D"'`. Such a word always hits a floor, so the raw text is only there to read.
+
 #### Static words
 
 A word is static when its value can be known without running the shell. Its value is built from the parser's pieces:
@@ -127,7 +129,12 @@ Floors are built-in and can't be configured away. Each floor contributes `ask` (
 | `env_assign` | an assignment whose name doesn't match any `[shell] safe_env` regex: inline prefixes, `env NAME=…`, assignment-only segments (`PATH=./evil; cargo test`), and `NAME=value` arguments of `export`, `declare`, `typeset`, `local`, `readonly` |
 | `cd` | `cd` / `pushd` to a path that isn't static and inside `{cwd}`; bare `cd`, `cd -`, `popd`, or any `cd` option |
 
-Recursion into substitutions (including those in unquoted heredoc bodies) still happens when `expansion` fires, so a deny on an inner command wins.
+In an unquoted heredoc body only `$`, backticks and `\` are special, and any `$` counts as `expansion` (even a lone one).
+
+Recursion into substitutions still happens when `expansion` fires, so a deny on an inner command wins. Commands inside `$( )`, backticks and `<( )` / `>( )` are walked wherever they appear: args, the command word, redirect targets, here-strings, assignment values and unquoted heredoc bodies. Nesting is capped at 16 levels; deeper is `unsupported`. Known gaps, which still ask through the `expansion` floor but miss a deny on the inner command:
+
+- substitutions inside `${…}` or `$((…))`, e.g. `${x:-$(curl x)}`;
+- backquoted commands are re-parsed as brush-parser gives them (only `` \` `` is unescaped), so `\$` and `\\` inside backticks can differ slightly from bash.
 
 #### Assignment-only segments
 
@@ -177,7 +184,7 @@ outside = ["{cwd}", "/tmp"]
 
 | Construct | Present when | Extra keys |
 |-----------|-------------|-----------|
-| `redirect_write` | `>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `N>` to a file (not fd dups; `/dev/null` excluded) | `outside`: only fires for targets **not** under these directories (resolved like `paths_under`); omitted = any write |
+| `redirect_write` | `>`, `>>`, `>|`, `&>`, `&>>`, `<>`, `N>`, or `>&` with a non-fd word, to a file (not fd dups such as `2>&1`, `>&-`, `3>&2-`; `/dev/null` excluded) | `outside`: only fires for targets **not** under these directories (resolved like `paths_under`); omitted = any write |
 | `redirect_read` | `<`, `N<` from a file | — |
 | `heredoc` | `<<`, `<<-`, `<<<` | — |
 | `pipe` | a pipeline with more than one command | — |
@@ -231,8 +238,10 @@ Sent to the agent with every decision (Copilot and Claude show it for `deny` and
 
 - A rule: its `reason` if set, else the default `tool-gate-hook: <decision> by <kind> #<index> (<description>)`, where `<kind>` is `rule`, `command rule` or `construct rule`.
 - A command rule also gets ` — in "<text>"` for the segment it matched, e.g. `tool-gate-hook: ask by command rule #6 (git push) — in "git push"`.
-- A floor: `tool-gate-hook: ask — <description> (<detail>), in "<segment source>"`, leaving out the parts that don't apply. For example: `tool-gate-hook: ask — shell syntax that tool-gate-hook can't check (glob in docs/*.md), in "ls docs/*.md"`.
-- Each floor has a fixed human-readable description (`parse_error`: "the command could not be parsed"; `unsupported`: "shell syntax that tool-gate-hook can't check"). The detail says what triggered it, e.g. `variable in $HOME`, `for loop`, `assignment FOO`.
+- A floor: `tool-gate-hook: ask — <description> (<detail>), in "<segment source>"`, leaving out the parts that don't apply. For example: `tool-gate-hook: ask — a value only the shell can work out (glob in docs/*.md), in "ls docs/*.md"`.
+- Each floor has a fixed human-readable description: `parse_error` "the command could not be parsed", `unsupported` "shell syntax that tool-gate-hook can't check", `expansion` "a value only the shell can work out", `dynamic_command` "a command name only the shell can work out". (To be reviewed with real examples before release.)
+- The detail says what triggered it: the kind of piece and the raw word, with the place when it isn't an arg or the command word. For example `variable in $HOME`, `glob in redirect *.log`, `variable in here-string $x`, `command substitution in heredoc body`, `process substitution in <(sort a)`, `for loop`, `assignment FOO`.
+- brush-parser normalises `source`, e.g. `2>&1` is rendered as `2>& 1`.
 
 ### Rule indexes
 
@@ -278,7 +287,10 @@ Top-level `matches` are in evaluation order: `[[rule]]` matches (file order), th
 
 - `segment` references are 1-based indexes into `segments`. `cd` segments appear with `"decision": "neutral"`.
 - Floors appear in `constructs` with `"floor": true` and a `detail` string where useful (e.g. which variable).
+- Constructs carry `construct`, `segment` (when there is one), `detail`, `target` and `floor`, leaving out the ones that don't apply. `pipe`, `background` and `subshell` point at the first segment inside them. `redirect_read` and `redirect_write` carry the `target`; a group's own redirects (`( … ) > out`) have no segment. `heredoc` has the unquoted delimiter as `detail` (none for here-strings), and `substitution` has the inner command.
+- A segment's `matches` are its command-rule matches, without `segment`.
 - Strings in `shell` are truncated with `max_value_len` like the payload.
+- Records keep a readable key order (struct order, and the payload's own order).
 - `level = "matched"` records a shell call if any rule or floor matched.
 
 ## `explain` subcommand
