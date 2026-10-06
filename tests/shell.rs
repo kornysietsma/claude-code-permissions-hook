@@ -64,6 +64,11 @@ match.name = { equals = "curl" }
 decision = "allow"
 description = "read-only git"
 match.text = { regex = '^git (log|status)\b' }
+
+[[command_rule]]
+decision = "allow"
+description = "find"
+match.name = { equals = "find" }
 "#;
 
 fn outcome(agent: Agent, command: &str) -> Outcome {
@@ -440,4 +445,72 @@ fn a_command_rule_needs_conditions_and_known_keys() {
     );
     assert!(typo.contains("command rule #1"), "{typo}");
     assert!(typo.contains("tool"), "{typo}");
+}
+
+/// Allows every command, so only floors (and the deny) can stop one
+const ALLOW_EVERYTHING: &str = r#"
+[[command_rule]]
+decision = "allow"
+description = "everything"
+match.text = { regex = '' }
+
+[[command_rule]]
+decision = "deny"
+description = "recursive delete"
+match.text = { regex = '^rm -rf\b' }
+"#;
+
+fn decision_allowing_everything(command: &str) -> (String, String) {
+    let output = run_with_config(
+        Agent::Claude,
+        ALLOW_EVERYTHING,
+        &shell_payload(Agent::Claude, command),
+    )
+    .output
+    .unwrap();
+    (
+        output_field(Agent::Claude, &output, "permissionDecision"),
+        output_field(Agent::Claude, &output, "permissionDecisionReason"),
+    )
+}
+
+const SHELL_REENTRY: &str =
+    "tool-gate-hook: ask — a command that runs shell code or changes how later commands run";
+const EXEC_TOOL: &str =
+    "tool-gate-hook: ask — a command that can run other commands or delete files";
+
+#[test]
+fn shells_and_commands_that_run_other_commands_ask_even_when_allowed() {
+    for (command, description, detail) in [
+        ("bash -c 'ls'", SHELL_REENTRY, "(bash)"),
+        ("sh x.sh", SHELL_REENTRY, "(sh)"),
+        ("cat x | sh", SHELL_REENTRY, "(sh)"),
+        ("/bin/bash x", SHELL_REENTRY, "(bash)"),
+        ("env bash x", SHELL_REENTRY, "(bash)"),
+        ("eval x", SHELL_REENTRY, "(eval)"),
+        ("source x", SHELL_REENTRY, "(source)"),
+        (". x", SHELL_REENTRY, "(.)"),
+        ("alias ls=x", SHELL_REENTRY, "(alias)"),
+        ("setopt x", SHELL_REENTRY, "(setopt)"),
+        ("exec cargo test", SHELL_REENTRY, "(exec)"),
+        ("ls | xargs rm", EXEC_TOOL, "(xargs)"),
+        (r"find . -exec rm {} \;", EXEC_TOOL, "(find -exec)"),
+        ("find . -delete", EXEC_TOOL, "(find -delete)"),
+    ] {
+        let (decision, reason) = decision_allowing_everything(command);
+        assert_eq!(decision, "ask", "{command}");
+        assert!(reason.starts_with(description), "{command}: {reason}");
+        assert!(reason.contains(detail), "{command}: {reason}");
+    }
+}
+
+#[test]
+fn a_deny_beats_a_shell_reentry_floor() {
+    assert_eq!(decision_allowing_everything("bash x; rm -rf /").0, "deny");
+}
+
+#[test]
+fn find_without_actions_can_be_allowed() {
+    assert_eq!(decision("find . -name '*.rs'").as_deref(), Some("allow"));
+    assert_eq!(decision("find . -delete").as_deref(), Some("ask"));
 }

@@ -24,6 +24,16 @@ const MAX_DEPTH: usize = 16;
 /// Builtins whose `NAME=value` arguments set variables
 const DECLARATIONS: [&str; 5] = ["export", "declare", "typeset", "local", "readonly"];
 
+/// Commands that run shell code, or change how later commands run, whatever their arguments
+const SHELL_REENTRY: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "exec", "trap", "alias",
+    "unalias", "set", "setopt", "unsetopt", "shopt", "emulate", "zmodload", "enable", "disable",
+    "autoload",
+];
+
+/// `find` arguments that run commands or delete files
+const FIND_ACTIONS: &[&str] = &["-exec", "-execdir", "-ok", "-okdir", "-delete"];
+
 /// The `[shell]` config
 #[derive(Debug, Default)]
 pub struct Settings {
@@ -80,6 +90,8 @@ pub enum ConstructKind {
     Expansion,
     DynamicCommand,
     EnvAssign,
+    ShellReentry,
+    ExecTool,
     Substitution,
     Heredoc,
     Pipe,
@@ -97,6 +109,8 @@ impl ConstructKind {
             ConstructKind::Expansion => "expansion",
             ConstructKind::DynamicCommand => "dynamic_command",
             ConstructKind::EnvAssign => "env_assign",
+            ConstructKind::ShellReentry => "shell_reentry",
+            ConstructKind::ExecTool => "exec_tool",
             ConstructKind::Substitution => "substitution",
             ConstructKind::Heredoc => "heredoc",
             ConstructKind::Pipe => "pipe",
@@ -114,7 +128,9 @@ impl ConstructKind {
             | ConstructKind::Unsupported
             | ConstructKind::Expansion
             | ConstructKind::DynamicCommand
-            | ConstructKind::EnvAssign => true,
+            | ConstructKind::EnvAssign
+            | ConstructKind::ShellReentry
+            | ConstructKind::ExecTool => true,
             ConstructKind::Substitution
             | ConstructKind::Heredoc
             | ConstructKind::Pipe
@@ -132,6 +148,10 @@ impl ConstructKind {
             ConstructKind::Expansion => "a value only the shell can work out",
             ConstructKind::DynamicCommand => "a command name only the shell can work out",
             ConstructKind::EnvAssign => "a variable not listed in [shell] safe_env",
+            ConstructKind::ShellReentry => {
+                "a command that runs shell code or changes how later commands run"
+            }
+            ConstructKind::ExecTool => "a command that can run other commands or delete files",
             ConstructKind::Substitution => "a command substitution",
             ConstructKind::Heredoc => "a heredoc or here-string",
             ConstructKind::Pipe => "a pipe",
@@ -389,6 +409,7 @@ impl Walker<'_> {
         match name {
             Some(name) => {
                 self.unwrap(&mut segment_value, name, args, segment);
+                self.command_floors(&segment_value, segment);
                 self.analysis.segments.push(segment_value);
             }
             None if assigns => {
@@ -478,6 +499,23 @@ impl Walker<'_> {
                 );
                 None
             }
+        }
+    }
+
+    /// Floors for what the (unwrapped) command is, by the basename of its name
+    fn command_floors(&mut self, command: &Segment, segment: Option<usize>) {
+        let base = command.name.rsplit('/').next().unwrap_or_default();
+        if SHELL_REENTRY.contains(&base) {
+            self.floor(ConstructKind::ShellReentry, segment, base);
+        } else if base == "xargs" {
+            self.floor(ConstructKind::ExecTool, segment, base);
+        } else if base == "find"
+            && let Some(action) = command
+                .args
+                .iter()
+                .find(|arg| FIND_ACTIONS.contains(&arg.as_str()))
+        {
+            self.floor(ConstructKind::ExecTool, segment, format!("find {action}"));
         }
     }
 
@@ -1070,6 +1108,53 @@ mod tests {
             floors(&analysis),
             vec![("unsupported", Some(0), "timeout option --bogus")]
         );
+    }
+
+    #[test]
+    fn shells_and_state_changing_builtins_are_floors() {
+        for (command, detail) in [
+            ("bash -c ls", "bash"),
+            ("/bin/sh x.sh", "sh"),
+            (". ./env.sh", "."),
+            ("source x", "source"),
+            ("eval x", "eval"),
+            ("alias ls=x", "alias"),
+            ("set -e", "set"),
+            ("exec cargo test", "exec"),
+            ("env FOO=1 zsh x", "zsh"),
+            ("timeout 5 fish", "fish"),
+        ] {
+            let analysis = analyse_with_safe_env(command);
+            let reentry: Vec<_> = floors(&analysis)
+                .into_iter()
+                .filter(|f| f.0 == "shell_reentry")
+                .collect();
+            assert_eq!(
+                reentry,
+                vec![("shell_reentry", Some(0), detail)],
+                "{command}"
+            );
+        }
+        assert_eq!(floors(&analyse_here("bashful x; command ls")), vec![]);
+    }
+
+    #[test]
+    fn xargs_and_find_actions_are_floors() {
+        for (command, expected) in [
+            ("ls | xargs rm", vec![("exec_tool", Some(1), "xargs")]),
+            (
+                r"find . -name x -exec rm {} \;",
+                vec![("exec_tool", Some(0), "find -exec")],
+            ),
+            (
+                "/usr/bin/find . -delete",
+                vec![("exec_tool", Some(0), "find -delete")],
+            ),
+            ("find . -name '*.rs'", vec![]),
+            ("grep -- -exec x", vec![]),
+        ] {
+            assert_eq!(floors(&analyse_here(command)), expected, "{command}");
+        }
     }
 
     #[test]

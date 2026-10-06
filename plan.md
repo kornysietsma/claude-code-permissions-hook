@@ -10,9 +10,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Status
 
-- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last code commit is `4db2d2a` (step 5).
-- **Done:** steps 1 to 5.
-- **Next:** step 6, the `shell_reentry` and `exec_tool` floors.
+- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 6 (`git log` has the hash).
+- **Done:** steps 1 to 6.
+- **Next:** step 7, `cd` tracking and `paths_under`.
 
 ### Working on this branch
 
@@ -27,17 +27,17 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 - **Local corpus** (gitignored, may contain private paths):
   - build it with `scripts/shell-corpus.sh ~/.local/share/tool-gate-hook/claude.jsonl`, which writes `tests/fixtures/shell/corpus.local.jsonl` (one JSON string per line);
   - summarise it with `cargo test --test shell_corpus -- --ignored --nocapture`, which lists each floor's details per command;
-  - after step 5, 122 of 162 commands hit no floor. Most floors are `$VAR` from `S=…` assignments (20 `env_assign`), and globs.
+  - after step 6, 120 of 162 commands hit no floor. Most floors are `$VAR` from `S=…` assignments (20 `env_assign`), and globs. The 8 `shell_reentry` floors are all `bash script.sh` or `bash -n`.
 - **Corpus expectations** are regenerated with `explain`, an empty config and `--payload` (build each payload with `jq`, as commands can contain newlines), then reviewed with `diff`.
 - **`explain`** is the quickest manual check: `cargo run -q -- explain --agent claude --config examples/claude.toml --cwd /tmp 'COMMAND' | jq …`. An empty config file shows the bare analysis.
 
 ## Technical context
 
-### Code shape (as of step 5)
+### Code shape (as of step 6)
 
 | Module | Contents | Still to come |
 |--------|----------|---------------|
-| `src/shell/mod.rs` | `analyse(command, home, settings) -> Analysis`; `Settings { safe_env }` (the `[shell]` config); the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment` (with `kind: SegmentKind`, `#[serde(skip)]`, and `is_neutral()`), `SegmentKind::{Command, AssignmentOnly}`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`, `EnvAssign`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording; `value(raw, shown, …)` classifies `raw` but reports `shown` (an assignment's value is reported as the whole `NAME=value`). `simple()` puts prefix assignments in `env` (`assignment()`), checks names with `check_env_name()` (prefix, `env NAME=…`, and the `DECLARATIONS` builtins' args via `assigned_name()`), and calls `unwrap()`. `file_redirect()` records `redirect_read`/`redirect_write`. | Floors `ShellReentry`, `ExecTool` (6), `Cd` (7); `cd` and the effective directory (7), as `SegmentKind::Cd` (add it to `is_neutral`). `analyse` will need `cwd`. |
+| `src/shell/mod.rs` | `analyse(command, home, settings) -> Analysis`; `Settings { safe_env }` (the `[shell]` config); the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment` (with `kind: SegmentKind`, `#[serde(skip)]`, and `is_neutral()`), `SegmentKind::{Command, AssignmentOnly}`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`, `EnvAssign`, `ShellReentry`, `ExecTool`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording; `value(raw, shown, …)` classifies `raw` but reports `shown` (an assignment's value is reported as the whole `NAME=value`). `simple()` puts prefix assignments in `env` (`assignment()`), checks names with `check_env_name()` (prefix, `env NAME=…`, and the `DECLARATIONS` builtins' args via `assigned_name()`), and calls `unwrap()`, then `command_floors()` (`SHELL_REENTRY` names and `xargs`, and `find` with `FIND_ACTIONS`, by the basename of the unwrapped name). `file_redirect()` records `redirect_read`/`redirect_write`. | Floor `Cd` (7); `cd` and the effective directory (7), as `SegmentKind::Cd` (add it to `is_neutral`). `analyse` will need `cwd`. |
 | `src/shell/wrappers.rs` | `unwrap(name, args) -> Result<Unwrapped { wrappers, env, name, args }, String>`: peels `env`, `timeout`, `nice`, `nohup` and `time` (bare names only), with each one's option grammar; `Err` is the `unsupported` detail. Unit tests. | |
 | `src/shell/words.rs` | `analyse(raw, home, options) -> WordInfo { value: Result<String, NotStatic>, substitutions }`, `analyse_heredoc(raw, options)`; `NotStatic::{Expansion, Unsupported}(why)`; `$'…'` decoding; `quote()` for `text`. Unit tests. | |
 | `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`; `Agent::shell_payload(command, cwd)`, a minimal payload used by `explain` and tests. | |
@@ -85,27 +85,14 @@ Tests:
 
 ## Steps
 
-### Steps 1–5 ✅
+### Steps 1–6 ✅
 
 1. **brush-parser spike.** brush-parser 0.4.0 is in.
 2. **First end-to-end slice.** Segments; command rules on `text`/`name`; the `parse_error` and `unsupported` floors; an allow `[[rule]]` on the shell tool is a config error; the examples migrated; differential tests against zsh and bash.
 3. **Audit `shell` object and `explain`.** Including the `reason` in `explain` output, and `ask` for truncated audit records.
 4. **Substitutions, expansions, dynamic command names.** Word classification; the `expansion` and `dynamic_command` floors; recursion into substitutions (depth 16); unquoted heredoc bodies; non-floor constructs recorded; the curated corpus; `====`-style words are static.
 5. **Wrappers, `[shell] safe_env`, `env_assign`.** Prefix and `env` assignments go to `env`; the `env_assign` floor (also for declaration builtins' args); assignment-only segments are neutral; array assignments are `unsupported`; `env`/`timeout`/`nice`/`nohup`/`time` unwrapped (bare names only); `safe_env` in the claude and copilot examples.
-
-### Step 6: `shell_reentry` and `exec_tool` floors
-
-- [ ] `ShellReentry` by `name` basename, using the spec's list.
-- [ ] `ExecTool`: `xargs`, and `find` with `-exec`, `-execdir`, `-ok`, `-okdir` or `-delete`.
-
-**Automated:**
-- `bash -c 'ls'`, `sh x.sh`, `curl x | sh`, `eval x`, `source x`, `. x`, `alias ls=x`, `setopt x` and `exec cargo test` → ask, even with a broad allow rule;
-- a deny still wins over the floor;
-- `find . -name '*.rs'` → allow with a `find` rule; `find . -exec rm {} \;` and `find . -delete` → ask;
-- `ls | xargs rm` → ask;
-- `/bin/bash x` → ask (basename).
-
-**Manual:** `explain` on a pipe into a shell; check that the reason text reads well.
+6. **`shell_reentry` and `exec_tool` floors.** By the basename of the unwrapped name, so `env bash x` and `/bin/bash x` are caught; `find` only with an action that runs commands or deletes.
 
 ### Step 7: `cd` tracking and `paths_under`
 
@@ -191,7 +178,7 @@ Tests:
 - A non-static word after a wrapper (`timeout 60 $CMD`) becomes the name, but hits `expansion` (not `dynamic_command`), since it was classified as an arg.
 - **For step 8's harmless builtins:** `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v`, and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided: handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
 - **For step 7:** bash (not zsh) tilde-expands after `=` in assignment-like args (`make CC=~/x` passes `CC=/home/…/x`); the segment shows the literal `~`. Only the `--opt=value` part is path-like, and `--opt` isn't a valid name, so `paths_under` is unaffected; keep it that way.
-- **For step 9:** review the `env_assign` description ("a variable not listed in [shell] safe_env") with the other floor texts.
+- **For step 9:** review the `env_assign` description ("a variable not listed in [shell] safe_env") with the other floor texts. Floor reasons repeat themselves when the segment is only the name, e.g. `… (sh), in "sh"` for `git diff | sh`.
 
 **Example and test facts:**
 - `cargo test > /etc/x` is still allowed by the examples' cargo rule, as it was by the old regex rule; step 8's `redirect_write` rule fixes it.
