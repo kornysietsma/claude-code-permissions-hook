@@ -1,6 +1,6 @@
 # Plan: shell-aware rules
 
-Implements [`spec.md`](./spec.md) in vertical slices. Each step leaves the tool working, passes the quality gate, and can be checked by hand. Tick the boxes as steps land; record surprises in [Findings](#findings).
+Implements [`spec.md`](./spec.md) in vertical slices. Each step leaves the tool working, passes the quality gate, and can be checked by hand. Tick the boxes as steps land, and record anything later steps need in [Notes for later steps](#notes-for-later-steps).
 
 Quality gate, for every step:
 
@@ -8,142 +8,107 @@ Quality gate, for every step:
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
+## Status
+
+- **Branch** `shell-parsing`, not pushed; the PR is raised at the end.
+- **Done:** step 1 (brush-parser spike) and step 2 (compound commands allowed by command rules). The last commit is `01fc0aa`.
+- **Next:** step 3, the audit `shell` object and `explain`.
+
+### Working on this branch
+
+- **Don't `cargo install` this branch until step 11.** The author's live config (`~/.config/tool-gate-hook/claude.toml`) has Bash allow `[[rule]]`s, which are now a config error, so the new binary would `ask` on every call.
+- **The live hook is still the old binary.** Its `legacy_python` rule denies any Bash command whose text has a line starting with a Python tool name, including heredocs. So:
+  - write files containing such text (example configs, tests) with the Write/Edit tools, not `cat <<EOF`;
+  - write commit messages to a file in the scratchpad and use `git commit -F`.
+- **Something between the agent and the file turns a backslash-u unicode escape in written source into the literal character.** Build such strings at runtime, e.g. `format!("$'{}u00e9'", '\\')`.
+- **Claude Code's built-in `rm` safety check blocks inline `zsh -c '…'` / `bash -c '…'` scripts run from the Bash tool**, even without `rm`. Compare against real shells from Rust tests instead (`tests/shell_differential.rs`).
+- **Local corpus** (gitignored, may contain private paths):
+  - build it with `scripts/shell-corpus.sh ~/.local/share/tool-gate-hook/claude.jsonl`, which writes `tests/fixtures/shell/corpus.local.jsonl` (one JSON string per line);
+  - summarise it with `cargo test --test shell_corpus -- --ignored --nocapture`;
+  - at the end of step 2, 119 of 162 commands hit no floor.
+
 ## Technical context
 
-### Where things go
+### Code shape (as of step 2)
 
-| Module | Change |
-|--------|--------|
-| `src/shell.rs` (new; split into `src/shell/{mod,walk,words}.rs` if it passes ~400 lines) | Pure: `analyse(command, cwd, home, settings) -> Analysis`. Parsing, the walker, word unquoting, segments, constructs and floors, wrappers, `cd` tracking, path-like detection. No policy knowledge. |
-| `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`, and `Agent::shell_payload(command, cwd) -> Value` for `explain`. |
-| `src/config.rs` | `[[command_rule]]`, `[[construct_rule]]`, `[shell]`; the new config errors. |
-| `src/policy.rs` | Rule kinds, command and construct rule evaluation, `paths_under`, the combiner. |
-| `src/auditing.rs` | `kind` on rule references, the `shell` object, truncation applied to it. |
-| `src/lib.rs` | `run()` unchanged in shape; a shared inner function also used by `explain()`. |
-| `src/main.rs` | `explain` subcommand. |
-| `src/validate.rs` | Summary and checks for the new rule kinds. |
+| Module | Contents | Still to come |
+|--------|----------|---------------|
+| `src/shell/mod.rs` | `analyse(command, home) -> Analysis`, the allow-listed `Walker`, `Segment`, `Redirect`, `Construct`, `ConstructKind` (`ParseError`, `Unsupported` so far; `name()`, `is_floor()`, `describe()`), and `Analysis::unsupported(detail)`. | Recursion (4), other constructs and floors (4–7), wrappers and env (5), `cd` and effective directory (7). `analyse` will need `cwd` and `[shell]` settings. |
+| `src/shell/words.rs` | `static_value(raw, home, options) -> Result<String, why>`, `$'…'` decoding, `quote()` for `text`, with unit tests. | Distinguishing expansion kinds for the `Expansion` and `DynamicCommand` floors (4). |
+| `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`. | `Agent::shell_payload(command, cwd)` for `explain` (3). |
+| `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[[command_rule]]`; the errors for an allow `[[rule]]` that can match the shell tool, and for a command rule with no conditions. | `[[construct_rule]]` (8), `[shell]` (5), `paths_under` (7). |
+| `src/policy.rs` | `Policy { rules, command_rules, shell_tool }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions }> }`; the combiner in `Policy::evaluate`; `floor_match`. | `ConstructRule` kind and evaluation (8), `paths_under` (7). |
+| `src/auditing.rs` | `DecidedBy` / `MatchedRule` with `kind`, optional `index` and `segment`. | The `shell` object (3). |
+| `src/validate.rs` | Summary lines for rules and command rules. | Construct rules, `safe_env`, segment-field warnings (9). |
+| `src/lib.rs`, `src/main.rs` | `run` and `validate`, unchanged in shape. | `explain` (3). |
 
-### Key types (sketch; adjust as the code asks)
+Tests:
 
-```rust
-// shell.rs
-pub struct Analysis { pub segments: Vec<Segment>, pub constructs: Vec<Construct> }
-
-#[derive(Serialize)]
-pub struct Segment {
-    pub text: String, pub name: String, pub args: Vec<String>,
-    pub env: BTreeMap<String, String>, pub redirects: Vec<Redirect>,
-    pub wrappers: Vec<String>, pub source: String,
-    #[serde(skip)] pub kind: SegmentKind,      // Command | Cd | AssignmentOnly
-    #[serde(skip)] pub cwd: PathBuf,           // effective directory, after earlier `cd`s
-}
-
-pub struct Construct { pub kind: ConstructKind, pub segment: Option<usize>, pub detail: Option<String> }
-pub enum ConstructKind { // configurable
-    RedirectWrite { target: PathBuf }, RedirectRead, Heredoc, Pipe, Background, Subshell, Substitution,
-    // floors
-    ParseError, Unsupported, ShellReentry, ExecTool, DynamicCommand, Expansion, EnvAssign, Cd,
-}
-impl ConstructKind { pub fn is_floor(&self) -> bool; pub fn name(&self) -> &'static str; pub fn describe(&self) -> &'static str }
-
-// policy.rs
-pub enum RuleKind { Rule, CommandRule, ConstructRule, Floor }
-pub struct Match { kind, index, decision, description, reason, segment: Option<usize> }
-pub struct Evaluation { matches: Vec<Match>, shell: Option<ShellEvaluation> }
-pub struct ShellEvaluation { analysis: Analysis, segment_decisions: Vec<SegmentDecision> }
-```
-
-`Evaluation` stops borrowing `&Rule` and owns plain `Match` values; that's simpler once floors (which have no rule) are matches too.
+| File | Contents |
+|------|----------|
+| `tests/shell.rs` | Acceptance tests through `run` for both agents. Has its own `shell_payload(agent, command)` helper (cwd `/tmp`). Put a helper here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
+| `tests/shell_differential.rs` | `AGREED` (static commands zsh, bash and we split identically) and `DISAGREED` (must hit a floor). |
+| `tests/shell_corpus.rs` | The ignored local-corpus summary. |
+| `tests/examples.rs` | The example configs, including legacy-python cases. `legacy_python_inside_substitutions_is_not_allowed` asserts only "not allowed" until step 4. |
 
 ### Design decisions
 
-- **Two-level parsing with brush-parser.** `brush_parser::Parser::parse_program` gives the AST, where words are raw strings (`ast::Word { value, loc }`); `brush_parser::word::parse` splits a word into `WordPiece`s (`Text`, `SingleQuotedText`, `AnsiCQuotedText`, `DoubleQuotedSequence`, `TildeExpansion`, `ParameterExpansion`, `CommandSubstitution(String)`, `BackquotedCommandSubstitution(String)`, `EscapeSequence`, `ArithmeticExpression`). A word is **static** if it has only literal pieces (and a leading `Home` tilde); the static value is built from the pieces. Any other piece means `expansion`. Unquoted `Text` is also checked for glob characters (`brush_parser::pattern::pattern_has_glob_metacharacters`), brace expansion (`word::parse_brace_expansions`) and a leading `=`.
-- **Parser options**: bash mode, not POSIX or sh mode. Extended globbing is **on**, so `@(…)` and `*(…)` parse as globs (→ `expansion`) rather than errors. Decide in the spike if that misbehaves.
-- **Allow-listed walker.** The walker matches on the AST enums exhaustively. Supported: `Program`, `CompoundList`, `AndOrList`, `Pipeline` (including `time`), `SimpleCommand`, `SubshellCommand`, `BraceGroupCommand`, redirects and heredocs. Everything else (`if`, `for`, `while`, `case`, arithmetic commands, `[[ … ]]`, functions, coprocesses) produces `Unsupported`. Exhaustive `match` with no `_ =>` arm on brush's enums means a brush upgrade that adds a variant fails to compile, rather than silently allowing.
-- **Recursion.** `CommandSubstitution(String)` and backquoted substitutions are re-parsed with `parse_program` and walked. Process substitutions arrive as AST `SubshellCommand`s. Recursion depth is capped (16); deeper means `Unsupported`.
-- **Segments are matched as JSON.** `serde_json::to_value(&segment)` is fed to the existing `FieldCondition` code, so command rules reuse every matcher. `FieldCondition::matches` changes from taking a `ToolCall` to taking `(value, cwd, home)`, so `under` on segment fields resolves against the segment's effective directory.
+- **Two-level parsing.** `brush_parser::Parser::new(Cursor::new(cmd), &ParserOptions::default()).parse_program()` gives the AST, where words are raw strings (`ast::Word { value, loc }`). `brush_parser::word::parse(raw, &options)` splits a word into `WordPiece`s. Default options are bash mode, with extended globbing on: `@(…)` parses as text, which the glob check catches.
+- **Allow-listed walker with exhaustive matches** on brush's enums (no `_ =>` arms), so a brush upgrade that adds syntax fails to compile instead of being silently allowed. brush-parser is pinned to `=0.4.0`.
+- **Segments are matched as JSON**: `serde_json::to_value(&segment)` goes through the existing `FieldCondition` code. `FieldCondition::matches(value, cwd, context)` takes a cwd so that, from step 7, `under` can use a segment's effective directory.
+- **Combiner** (`Policy::evaluate`): deny or ask if any match has it (the first most restrictive match decides); else allow if there is at least one segment and every segment's decision is allow (the first allow match decides); else passthrough. When steps 5 and 7 add neutral segments (`cd`, assignment-only), they must be skipped in the "every segment" check, and a command with only neutral segments passes through.
 - **Rule indexes are per kind**, because TOML deserialises each array of tables separately and loses their relative order.
-- **The combiner** works on a flat list of `Match`es plus per-segment decisions, in the spec's order: `[[rule]]` matches (file order), floors (textual order), segments (textual order), construct rules (file order).
-- **Tests build Bash payloads in code.** A `common::claude_bash(command, cwd)` helper (and a Copilot equivalent) avoids a fixture per command. The captured fixtures stay for payload-shape tests.
-- **Real-world corpus.** `scripts/shell-corpus.sh` extracts the unique shell commands from an audit log (with `jq`) into `tests/fixtures/shell/corpus.local.jsonl`, which is **gitignored**: it may contain private paths. An `#[ignore]`d test analyses every line and prints a summary (counts per floor, parse errors), for spotting gaps. A sanitised, curated subset is committed as `tests/fixtures/shell/corpus.jsonl` and asserted in normal tests.
-- **Differential tests** live in `tests/shell_differential.rs`. For each case, run `<shell> -c '__d() { printf "%s\0" "$@"; }; __d <command line>'` with `zsh -f` and `/bin/bash`, and compare the NUL-separated words with our `[name] + args`. Skip a shell that isn't installed. Only static simple commands are used; cases where the shells disagree are asserted to hit a floor instead.
+- **Unsupported details** are short and specific (`for loop`, `variable in $HOME`, `assignment FOO`), and they appear in reasons.
+
+### brush-parser facts needed for later steps
+
+- **Word pieces**: `Text` (unquoted), `SingleQuotedText`, `AnsiCQuotedText` (raw: decode it ourselves), `DoubleQuotedSequence(Vec<WordPieceWithSource>)`, `EscapeSequence` (raw: drop the backslash), `TildeExpansion(TildeExpr)`, `ParameterExpansion`, `CommandSubstitution(String)` and `BackquotedCommandSubstitution(String)` (raw inner text: re-parse it to recurse), `ArithmeticExpression`, `GettextDoubleQuotedSequence`. Globs, braces and a leading `=` arrive as plain `Text`.
+- **Heredocs**: `IoRedirect::HereDocument(fd, IoHereDocument { requires_expansion, here_end, doc, remove_tabs })`. `requires_expansion` is false when the delimiter is quoted; `doc` is the raw body (parse it with `word::parse_heredoc`). Here-strings are `IoRedirect::HereString(fd, Word)`.
+- **Redirects**: `IoRedirect::File(Option<fd>, IoFileRedirectKind, IoFileRedirectTarget)`, with the target `Filename(Word)`, `Fd`, `Duplicate(Word)` (`1`, `-`) or `ProcessSubstitution(kind, SubshellCommand)`. `&>` / `&>>` is `OutputAndError(Word, append)`. Redirects carry no source location.
+- **Assignments**: `CommandPrefixOrSuffixItem::AssignmentWord(Assignment { name: AssignmentName, value: Scalar(Word) | Array(..), append, .. }, Word)`, in the prefix for `FOO=1 cmd`, and in the suffix for declaration builtins (`export X=1`). An assignment-only command is a `SimpleCommand` with `word_or_name: None`. Treat array values as unsupported.
+- **Process substitutions** in words are `CommandPrefixOrSuffixItem::ProcessSubstitution(kind, SubshellCommand)`, already parsed, so walk them directly.
+- **`time`** is `Pipeline.timed`; **`!`** is `Pipeline.bang`. Pipeline items are `(PipelineOperator, &Pipeline)` from `AndOrList::iter()`. `PipelineOperator` has no `Debug`.
+- **Source spans** are character indexes, so use the `Display` rendering of `SimpleCommand` for `source`.
+- **Parse errors** come back as `Err` (never seen to panic).
 
 ### Things to keep in mind throughout
 
-- `run` must always exit 0. Nothing in the shell analysis may panic: parse failures become constructs, not errors. Use no `unwrap` on parser output.
+- `run` must always exit 0. Nothing in the shell analysis may panic, so no `unwrap` on parser output.
 - Keep the payload a `serde_json::Value`.
-- Don't install this branch's binary until step 11. After step 2, the author's live config is invalid under the new binary (every call would get `ask`).
-- The live hook is still the old binary while we work. Write commit messages with a file tool and `git commit -F`, never heredocs that mention Python tools.
+- Every floor needs a test showing it beats a broad allow, and one showing a deny still beats the floor.
 
 ## Steps
 
-### Step 1: spike brush-parser
+### Step 1: spike brush-parser ✅
 
-- [x] Add `brush-parser = "=0.4.0"` (pinned). Check `cargo tree` for the dependency footprint, and that the build still passes the gate.
-- [x] Write `scripts/shell-corpus.sh` and gitignore `tests/fixtures/shell/corpus.local.jsonl`.
-- [x] A temporary `#[ignore]`d test that, for each corpus line and a list of nasty cases, prints the AST and the word pieces for every word.
-- [x] Confirm, and record in Findings:
-  - quoted versus unquoted pieces are distinguishable, and `$'…'` and escape sequences are decoded, or we can decode them ourselves;
-  - heredoc bodies and whether the delimiter was quoted are available;
-  - redirect fds and operators are available;
-  - source spans are good enough for `source` (or fall back to a re-rendered string);
-  - parse errors are returned, not panics, for garbage input;
-  - extglob on versus off for `*(…)`;
-  - how `time`, `!`, `coproc` and `[[ ]]` appear.
-- [x] Decide go or no-go. If no-go, switch to `tree-sitter-bash` and redo this step.
+Done. brush-parser 0.4.0 is in; the facts above came from the spike.
 
-**Verify:** the gate passes. The Findings section answers each bullet above. The spike test is either deleted or turned into the start of step 2's unit tests.
+### Step 2: first end-to-end slice ✅
 
-### Step 2: first end-to-end slice (compound commands, command rules)
-
-The smallest useful thing: `cargo build 2>&1 && cargo test` is allowed by command rules.
-
-- [x] Refactor, with no behaviour change, first and committed separately:
-  - `Evaluation` owns `Match` values with a `RuleKind`;
-  - `FieldCondition::matches(value, cwd, home)`;
-  - audit references gain `"kind": "rule"`. Update the audit tests.
-- [x] `Agent::shell_tool()`.
-- [x] `shell::analyse` for lists, pipelines, subshells, brace groups and simple commands with static words; redirects recorded. The `ParseError` and `Unsupported` floors. Any non-static word is `Unsupported` for now; step 4 refines it to `Expansion` and `DynamicCommand`. Static means literal pieces only (with `EscapeSequence` and `$'…'` decoded as in the Findings), **and** no unquoted `Text` containing `$`, glob or brace characters, or starting with `=`. The `$` check is a security fix from the spike (zsh `${(f)x}`), so it's needed from the first slice.
-- [x] `text` re-quoting: plain if `[A-Za-z0-9_@%+=:,./-]+`, else single-quoted with `'\''`.
-- [x] Config: `[[command_rule]]` (decision, description, reason, match), with an error for a command rule with no conditions. An error for an allow `[[rule]]` that can match the shell tool (`tool` omitted, or its regex matches the shell tool name).
-- [x] Policy: for shell-tool calls, run the analysis, evaluate command rules per segment, and combine. Floors become `Match`es of kind `Floor`. The reason gets ` — in "<text>"` or ` — <construct description> in "<source>"`.
-- [x] Missing or non-string command field → `Unsupported`.
-- [x] Migrate the tests that use Bash allow `[[rule]]`s (`tests/claude.rs`, `tests/copilot.rs`, `tests/smoke.rs`, `tests/examples.rs`) to command rules.
-- [x] Migrate `examples/*.toml`: shell allows become command rules on `text`. Remove `@shell_chain`, keep `@parent_dir` where still needed until step 7. `legacy_python` becomes a deny command rule on `name`. Add the `sudo` ask; the harmless-builtins allow moves to step 8 (see Findings). Run `validate` on each.
-- [x] Differential tests (`tests/shell_differential.rs`) for static simple commands.
-
-**Automated:** unit tests for re-quoting and static word values. Acceptance tests:
-- `cargo build 2>&1 && cargo test` → allow;
-- `foo && cargo test` → passthrough;
-- `cargo test; rm -rf /` with a deny → deny;
-- `if true; then cargo test; fi` → ask (`unsupported`);
-- unbalanced quotes → ask (`parse_error`);
-- a heredoc commit message with a quoted delimiter and a `pip install` line → allowed by a `git commit` rule, not denied;
-- the allow-`[[rule]]`-on-Bash config error, with and without `tool`;
-- the same for Copilot `bash` and `copilot_via_claude`.
-
-**Manual:** `cat tests/fixtures/claude/bash.json | cargo run -- run --agent claude --config examples/claude.toml`, plus a hand-made payload for a compound command.
+Done. Shell calls are analysed into segments. Command rules on `text` or `name` allow, ask or deny per segment; `parse_error` and `unsupported` floors ask. An allow `[[rule]]` that can match the shell tool is a config error. The examples and tests are migrated, and there are differential tests against zsh and bash.
 
 ### Step 3: audit `shell` object and `explain`
 
 Built early so every later step can be checked by hand.
 
-- [ ] Audit: the `shell` object (segments with their own matches and decision; constructs with `floor`). `kind` on all references. Truncation applied to string values in `shell`. Shell calls that hit a floor count as "matched".
-- [ ] `lib::explain(agent, config_path, input, context) -> Result<Value>`: the same evaluation as `run`, with the record built as if `level = "all"` and `max_value_len = 0`. Config errors are returned as `Err`.
-- [ ] CLI: `explain --agent A [--config C] [--cwd D] (COMMAND | --payload FILE)`. `--payload` accepts a raw payload or an audit record (take its `payload`). Pretty-print the JSON. Exit 1 on errors.
+- [ ] Audit: the `shell` object, built from `Evaluation::shell`. Segments get their own `matches` and `decision` (`allow`, `ask`, `deny` or null; `neutral` comes in steps 5 and 7). Constructs get `construct`, a 1-based `segment`, `detail` and `floor`. Truncate string values in `shell` with `max_value_len`, as for the payload (`truncate_json_strings`). A shell call with any floor counts as "matched" (it already does, because floors are matches).
+- [ ] `lib::explain(agent, config_path, input, context) -> Result<Value>`: the same evaluation as `run`, with the record built as if `level = "all"` and `max_value_len = 0`. Config errors are returned as `Err`. Share the evaluation code with `run` rather than duplicating it.
+- [ ] `Agent::shell_payload(command, cwd) -> Value`.
+- [ ] CLI: `explain --agent A [--config C] [--cwd D] (COMMAND | --payload FILE)`. `--payload` accepts a raw payload or an audit record (take its `payload`). `--cwd` defaults to the current directory. Pretty-print the JSON. Exit 1 on errors.
 - [ ] Smoke test: spawn `explain` on a compound command and on an audit record file; parse the JSON; check the decision and segment count.
 
-**Automated:** audit tests for the `shell` shape (full `assert_eq!` on one representative record), truncation inside `shell`, and `explain` with both input forms.
+**Automated:** audit tests for the `shell` shape (a full `assert_eq!` on one representative record), truncation inside `shell`, and `explain` with both input forms and with a broken config.
 
 **Manual:** `cargo run -- explain --agent claude --config examples/claude.toml 'cargo build 2>&1 && cargo test | tee out.txt'`. Read the JSON and confirm it's understandable without the docs.
 
 ### Step 4: substitutions, expansions, dynamic command names
 
-- [ ] Word classification: static, or expansion with a detail (which piece). Unquoted globs, brace expansion, and a leading `=` count as expansion.
-- [ ] Recursion into `$( )`, backticks and process substitutions, with the depth cap. Inner segments join the segment list.
-- [ ] Heredocs: an unquoted delimiter means the body is parsed with `word::parse_heredoc`, any expansion → `Expansion`, and substitutions are recursed. A quoted delimiter means a literal body. Here-strings are treated like words.
-- [ ] Floors: `Expansion` (args, env values, redirect targets, heredoc bodies) and `DynamicCommand` (command word). These replace step 2's temporary `Unsupported`.
+- [ ] Word classification: static, or expansion with a detail (which piece). This replaces step 2's temporary `Unsupported` for non-static words.
+- [ ] Recursion into `$( )`, backticks and process substitutions (in words and redirect targets), with a depth cap of 16 (deeper is `Unsupported`). Inner segments join the segment list in textual order.
+- [ ] Heredocs: with an unquoted delimiter, parse the body with `word::parse_heredoc`; any expansion is `Expansion`, and substitutions are recursed. With a quoted delimiter the body is literal. Here-strings are treated like words.
+- [ ] Floors: `Expansion` (args, env values, redirect targets, heredoc bodies) and `DynamicCommand` (the command word).
 - [ ] Constructs recorded (not yet configurable): `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`.
+- [ ] Commit a sanitised, curated subset of the corpus as `tests/fixtures/shell/corpus.jsonl`, with expected outcomes asserted in a normal test.
 
 **Automated:**
 - `echo $(curl x)` with a deny on curl → deny; without the deny → ask;
@@ -151,21 +116,24 @@ Built early so every later step can be checked by hand.
 - `echo {a,b}` → ask; `$CMD x` → ask (`dynamic_command`); `=python3 x` → ask;
 - `cat <<EOF` with `$(curl x)` → ask, and deny with a curl deny rule; `cat <<'EOF'` with the same body → allowed by a `cat` rule;
 - `echo "$HOME"` → ask; `echo '$HOME'` → allowed by an `echo` rule;
-- a zsh/bash disagreement table in the differential tests, asserting a floor (started in step 2 as `DISAGREED`);
-- tighten `legacy_python_inside_substitutions_is_not_allowed` in `tests/examples.rs` to **deny** (`echo $(python -V)`, backticks), now that substitutions are recursed.
+- extend the differential tests' `DISAGREED` table;
+- tighten `legacy_python_inside_substitutions_is_not_allowed` in `tests/examples.rs` to **deny**;
+- update `tests/shell.rs` `syntax_that_cannot_be_checked…`: its expected descriptions change from "shell syntax that tool-gate-hook can't check" to the new floors' descriptions.
 
-**Manual:** `explain` a few real messy commands from the corpus; run the ignored corpus test and skim the floor counts.
+**Manual:** `explain` a few real messy commands from the corpus; run the corpus summary and skim the floor counts.
 
 ### Step 5: wrappers, `[shell] safe_env`, `env_assign`
 
 - [ ] `[shell]` config with `safe_env` (regexes and `@patterns`); unknown keys are errors.
-- [ ] Inline assignment prefixes go to `env`. Assignment-only segments (neutral, `SegmentKind::AssignmentOnly`). `export`, `declare`, `typeset`, `local` and `readonly` `NAME=value` args are checked too.
-- [ ] The `EnvAssign` floor for names not matching `safe_env`.
-- [ ] Wrapper unwrapping (`env`, `timeout`, `nice`, `nohup`, `time`) with the option grammar from the spec; unknown options → `Unsupported`. `wrappers` is recorded.
+- [ ] Inline assignment prefixes go to `env`. Assignment-only segments are neutral (`SegmentKind::AssignmentOnly`, skipped by the combiner's "every segment" check). The `NAME=value` args of `export`, `declare`, `typeset`, `local` and `readonly` are checked too (step 2 treats them as plain args).
+- [ ] The `EnvAssign` floor for names not matching `safe_env`. This replaces step 2's temporary `Unsupported` for prefix assignments and assignment-only commands.
+- [ ] Wrapper unwrapping (`env`, `timeout`, `nice`, `nohup`; `time` is already recorded) with the spec's option grammar; unknown options are `Unsupported`. `wrappers` is recorded.
+- [ ] Example configs: add a `[shell] safe_env` list.
 
 **Automated:**
 - `RUST_LOG=debug cargo test` and `env RUST_LOG=debug cargo test` → allow with `safe_env`;
 - `GIT_PAGER=x git log`, `PATH=./evil cargo test`, `PATH=./evil; cargo test` and `export GIT_PAGER=x; git log` → ask;
+- `FOO=1` alone → passthrough (only neutral segments);
 - `timeout 60 cargo test`, `timeout -s KILL 60 cargo test` and `nice -n 5 cargo test` → allow;
 - `timeout --bogus 60 cargo test` and `env -i cargo test` → ask;
 - bare `timeout` → a segment named `timeout`;
@@ -189,11 +157,10 @@ Built early so every later step can be checked by hand.
 
 ### Step 7: `cd` tracking and `paths_under`
 
-- [ ] `cd` / `pushd` to a static path inside `{cwd}` is neutral (`SegmentKind::Cd`) and updates the effective directory for later segments. Anything else is the `Cd` floor (bare `cd`, `cd -`, `popd`, options, outside paths, non-static paths).
-- [ ] `paths_under` on command rules: path-like detection (args with `/`, or starting with `.` or `~`; the value part of `--opt=value`; redirect targets except fd dups and `/dev/null`). Resolve against the segment's effective directory with `paths::resolve`.
-- [ ] `~` expansion in static words (leading `~` or `~/`). `~user`, `~+` and `~-` are `Expansion`.
+- [ ] `analyse` takes the payload cwd. `cd` / `pushd` to a static path inside `{cwd}` is neutral (`SegmentKind::Cd`) and updates the effective directory for later segments (`Segment.cwd`, `#[serde(skip)]`). Anything else is the `Cd` floor (bare `cd`, `cd -`, `popd`, options, outside paths, non-static paths).
+- [ ] `paths_under` on command rules: path-like detection (args with `/`, or starting with `.` or `~`; the value part of `--opt=value`; redirect targets except fd dups and `/dev/null`). Resolve against the segment's effective directory with `paths::resolve`. Pass `Segment.cwd` into `matches_value` too, so `under` on segment fields agrees.
 - [ ] A `cd`-only command → passthrough.
-- [ ] Examples: replace the remaining `@parent_dir` uses with `paths_under`. Remove the `parent_dir` pattern.
+- [ ] Examples: replace the remaining `@parent_dir` uses (mermaid) with `paths_under`, and remove the `parent_dir` pattern.
 
 **Automated:**
 - `rm build/x` with `paths_under = ["{cwd}"]` → allow; `rm /etc/x` and `rm ../x` → passthrough;
@@ -207,34 +174,35 @@ Built early so every later step can be checked by hand.
 
 ### Step 8: construct rules
 
-- [ ] Config: `[[construct_rule]]` with `decision`, `construct`, `description`, `reason`, and `outside` (only for `redirect_write`). Errors: allow, an unknown construct, a floor name, `outside` on another construct.
-- [ ] Evaluation: a construct rule matches if any recorded construct of its kind is present (for `redirect_write` with `outside`, only targets not under those directories, resolved against the segment's effective directory).
-- [ ] Examples: ask on `background`; ask on `redirect_write` outside `{cwd}` and `/tmp`. Add the harmless-builtins allow (`true`, `false`, `:`, `echo`, `printf`, `test`, `[`) now that writes are checked, with a test that `echo x > ~/.zshrc` asks.
+- [ ] Config: `[[construct_rule]]` with `decision`, `construct`, `description`, `reason`, and `outside` (only for `redirect_write`). Errors: allow, an unknown construct, a floor name, `outside` on another construct. Add `RuleKind::ConstructRule`.
+- [ ] Evaluation: a construct rule matches if any recorded construct of its kind is present. For `redirect_write` with `outside`, only targets not under those directories count, resolved against the segment's effective directory. Matches go after the command-rule matches.
+- [ ] Examples: ask on `background`; ask on `redirect_write` outside `{cwd}` and `/tmp`. Add the harmless-builtins allow (`true`, `false`, `:`, `echo`, `printf`, `test`, `[`), held back from step 2 until writes are checked.
 
 **Automated:**
 - `cargo test > /tmp/out.txt` → allow; `cargo test > ~/out.txt` → ask; `cargo test > out.txt` → allow;
+- `echo x > ~/.zshrc` → ask with the example config;
 - `cd sub && cargo test > ../../x` → ask;
 - `cargo test &` → ask;
 - each config error.
 
-**Manual:** `explain` a command that triggers both a command rule allow and a construct rule ask; check which one is the deciding item and that the reason makes sense.
+**Manual:** `explain` a command that triggers both a command rule allow and a construct rule ask; check which is the deciding item and that the reason makes sense.
 
 ### Step 9: `validate` and reason polish
 
-- [ ] The summary: counts per rule kind and decision, construct rules by construct, `safe_env`, patterns, audit.
+- [ ] The summary: counts per rule kind and decision (rules and command rules done in step 2), construct rules by construct, `safe_env`, patterns, audit.
 - [ ] Warnings: command rule match paths whose first component isn't a segment field. The existing payload-key warning stays for `[[rule]]`.
 - [ ] Review every floor's `describe()` text and the reason formats against real examples; keep them short.
 
-**Automated:** validate summary snapshot tests (`assert_eq!` on the full text) for the example configs; the warning tests.
+**Automated:** validate summary tests (`assert_eq!` on the full text) for the example configs; the warning tests.
 
 **Manual:** run `validate` on each example and read the output.
 
 ### Step 10: docs, README, AGENTS.md and skills
 
-- [ ] `docs/configuration-guide.md`: a new shell section (segments, command rules, `paths_under`, construct rules, floors, `[shell]`, evaluation order, `explain`, zsh notes). Update the regex caveats, the shell-chaining note, the worked examples and the audit section. Update rule indexes to per-kind.
+- [ ] `docs/configuration-guide.md`: a new shell section (segments, static words, command rules, `paths_under`, construct rules, floors, `[shell]`, evaluation order, reasons, `explain`, zsh notes). Update the regex caveats, the shell-chaining note, the worked examples, and the audit section (`kind`, `segment`, floor matches, `shell`). Rule indexes are per kind.
 - [ ] `README.md`: a short pitch for compound commands, and `explain`.
-- [ ] `AGENTS.md`: the code structure (`shell.rs`), the out-of-scope list (compound commands are now parsed; control structures aren't yet), the brush-parser pinning note, and removal of the `legacy_python` heredoc caveat (keep it until step 11 is done).
-- [ ] `examples/skills/tool-gate-rules-claude/SKILL.md` and `…-copilot/SKILL.md`, following the spec's outline, with valid YAML frontmatter (`name`, `description`).
+- [ ] `AGENTS.md`: the code structure (`src/shell/`), the out-of-scope list (compound commands are now parsed; control structures aren't yet), the brush-parser pinning note, and the corpus and differential test notes. Keep the `legacy_python` heredoc caveat until step 11.
+- [ ] `examples/skills/tool-gate-rules-claude/SKILL.md` and `…-copilot/SKILL.md`, following the spec's outline, with valid YAML frontmatter (`name`, `description`). Include the tip that commands using shell variables (`$f`) or globs always ask, so agents should spell paths out when they want a command auto-allowed.
 - [ ] Test: every TOML snippet in the skills under a "recipe" marker is extracted and loaded with `Config::from_toml` for its agent (`tests/examples.rs`).
 
 **Automated:** the skill-recipe test; the examples test (count updated).
@@ -258,51 +226,22 @@ Built early so every later step can be checked by hand.
 
 - **Security-relevant behaviour is tested as acceptance tests** through `tool_gate_hook::run`. Each floor has at least one test showing it overrides a broad allow, and one showing a deny still beats it.
 - **Parser agreement** is covered by the zsh/bash differential tests. Shell disagreements are explicit tests that land on floors.
-- **Real-world fit** comes from the local corpus (an ignored test, plus the step 11 replay) and the committed curated corpus.
+- **Real-world fit** comes from the local corpus (the summary test, plus the step 11 replay) and the committed curated corpus.
 - **Readability** is checked by hand with `explain` at each step.
 - Coverage follows AGENTS.md: main behaviours and security edges. No concurrency or process orchestration beyond the existing smoke tests and the differential tests.
 
-## Findings
+## Notes for later steps
 
-Record spike results and surprises here as steps land.
+**Temporary `Unsupported` cases from step 2, each replaced by a later step:**
+- non-static words → step 4 (`Expansion` / `DynamicCommand`);
+- process substitutions, and heredocs with an unquoted delimiter → step 4;
+- prefix assignments and assignment-only commands → step 5 (`EnvAssign`, neutral segments).
 
-### Step 1: brush-parser spike (2026-10-05)
+Redirect-only commands (`> file`) stay `Unsupported` for good (spec).
 
-**Go.** `brush-parser = "=0.4.0"` adds about 9 direct dependencies (`bon`, `cached`, `peg`, `tracing`, `thiserror`, `insta`, …); the build and gate are fine. The spike is `tests/shell_spike.rs` (ignored tests); delete it in step 2 once real tests cover the same ground.
+**Example and test changes made in step 2:**
+- The mermaid example lost its `echo $$-$RANDOM` rule: `$` expansion is a floor, so it can never be allowed, and the test asserts it asks.
+- `cargo test > /etc/x` is still allowed by the examples' cargo rule, as it was by the old regex rule; step 8's `redirect_write` rule fixes it.
+- In audit records, `[[rule]]` matches now come before command-rule matches. `tests/audit.rs` `deny_wins_and_all_matches_are_recorded_rules_first` pins this.
 
-Local corpus: 162 unique Claude commands, 0 parse errors, 0 word-parse errors. 6 use `for` loops (→ `unsupported`). 21 contain parameter expansions or substitutions (→ `expansion` ask), mostly scratch variables like `$f` and `$d`. That's a hint for the skills and docs: tell agents to avoid shell variables in commands they want auto-allowed. 5 have heredocs, all with quoted delimiters.
-
-What the parser gives:
-
-- **Quoting**: `word::parse` pieces distinguish `Text` (unquoted), `SingleQuotedText`, `DoubleQuotedSequence` (nested pieces), `AnsiCQuotedText`, `EscapeSequence`, `TildeExpansion`, `ParameterExpansion`, `CommandSubstitution(String)`, `BackquotedCommandSubstitution(String)` and `ArithmeticExpression`.
-  - `EscapeSequence` is raw (`"\\ "`, `"\\$"`, `"\\\""`): the value is the character after the backslash. Inside double quotes, `\b` and `\|` stay as `Text` with the backslash, which is correct bash behaviour.
-  - `AnsiCQuotedText` is **raw** (`"\\x41\\u00e9\\n"`): decode it ourselves. Decode `\n \t \r \\ \' \" \a \b \e \f \v \xHH` and octal; treat anything else (`\u`, `\U`, `\c`) as `unsupported`.
-  - Line continuations are already joined (`a\<newline>b` → `ab`). Comments are dropped.
-- **Globs, braces and `=` are plain `Text`**: `*.rs`, `{a,b}`, `@(a|b)`, `*(e:…:)` and `=python3` all arrive as `Text`, so detect them ourselves in unquoted text.
-- **Danger: zsh `${(f)x}` parses as `Text("$") + Text("{(f)x}")`**, which looks static. Rule: an unquoted `Text` containing `$` is `expansion`. (Quoted `$` is fine: `'$x'` is `SingleQuotedText`, and `"\$"` is an escape.)
-- **Heredocs**: `IoRedirect::HereDocument(fd, IoHereDocument { requires_expansion, here_end, doc, remove_tabs })`. `requires_expansion` is false for quoted delimiters; `doc` is the raw body. Here-strings: `IoRedirect::HereString(fd, Word)`, with a raw word.
-- **Redirects**: `IoRedirect::File(Option<fd>, kind, target)` with `IoFileRedirectKind` (`Read`, `Write`, `Append`, `ReadAndWrite`, `Clobber`, `DuplicateInput`, `DuplicateOutput`) and a target of `Filename(Word)`, `Fd`, `Duplicate(Word)` (e.g. `1` or `-`) or `ProcessSubstitution`. `&>` / `&>>` is `OutputAndError(Word, append)`.
-- **Assignments**: `CommandPrefixOrSuffixItem::AssignmentWord(Assignment { name, value: Scalar(Word) | Array(..), append, .. }, Word)`. Assignment-only segments are a `SimpleCommand` with no `word_or_name`. Treat array values as `unsupported`.
-- **Process substitutions**: a `CommandPrefixOrSuffixItem::ProcessSubstitution(kind, SubshellCommand)` already parsed into an AST, so walk it directly.
-- **`time`** is `Pipeline.timed` (not a word), so record it as a wrapper from that flag. **`!`** is `Pipeline.bang` (neutral). **`coproc`**, `[[ ]]` (`Command::ExtendedTest`), `if`, `for` and so on are distinct variants → `unsupported`.
-- **Source spans** use *character* indexes (not bytes), and redirects carry no location. For `source`, use the AST's `Display` rendering of the simple command rather than slicing the input.
-- **Parse errors** come back as `Err` (e.g. unterminated quote), not panics. Treat any panic as impossible but unproven: `analyse` doesn't catch panics, and fuzzing is out of scope.
-- `PipelineOperator` doesn't implement `Debug` (cosmetic).
-
-Extglob is left **on** (the default): `@(a|b)` parses as text containing glob characters, which the glob check turns into `expansion`.
-
-Not done in the spike: zsh/bash comparison from the terminal. Claude Code's built-in `rm` safety check blocked an inline `zsh -c` script (a false positive, since the script has no `rm`). The differential tests in step 2 spawn the shells from Rust instead.
-
-### Step 2: first end-to-end slice (2026-10-06)
-
-- **Code shape**: `src/shell/mod.rs` (walker, `Segment`, `Construct`, `Analysis`) and `src/shell/words.rs` (static word values, `$'…'` decoding, re-quoting). `Config::load` / `from_toml` now take the `Agent`, because the shell-allow check needs the shell tool name. `Policy` holds `command_rules` and the `shell_tool`. A `Match` has `index: Option<usize>` (none for floors) and `segment: Option<usize>` (1-based). A floor's `description` is its construct name.
-- **Matches are ordered**: `[[rule]]` matches, then floors, then command rules per segment. So in audit records, rule matches now come before command rule matches.
-- **Temporary `Unsupported` cases** (later steps refine them): non-static words (step 4), prefix assignments and assignment-only or redirect-only commands (step 5), process substitutions and heredocs with an unquoted delimiter (step 4). Suffix `NAME=value` words (e.g. `export X=1`) are plain args for now; step 5 checks them with `env_assign`.
-- **Redirects on a `( … )` or `{ …; }` group** are copied onto every segment inside it.
-- **The harmless-builtins allow is deferred to step 8.** Allowing `echo` before redirect writes are checked would let `echo x > ~/.zshrc` through. (`cargo test > /etc/x` is allowed by the cargo rule today, as it was by the old regex rule; step 8 fixes both.)
-- **The mermaid example lost its `echo $$-$RANDOM` rule**: `$` expansion is a floor, so it can never be allowed. The test now asserts it asks.
-- **`validate`** already shows a `command rules` count line; step 9 does the rest.
-- **Differential tests** pass against `/bin/zsh -f` and `/bin/bash` 3.2 for 16 tricky commands. The four `DISAGREED` words (`=ls`, `*.rs`, `{a,b}`, `${(f)x}`) hit floors.
-- **Local corpus**: 119 of 162 commands hit no floor. The 43 that do are globs (`docs/*.md`), shell variables, `for` loops, `S=…` assignments, and `echo ====` (which zsh really does reject as `=` expansion).
-- **Tooling gotcha**: something between the agent and the file turned a backslash-u unicode escape sequence in test source into the literal character. Build such strings at runtime (`format!("$'{}u00e9'", '\\')`).
-- **Dogfooding gotcha**: the live (old) hook denies any Bash command whose heredoc text has a line starting with a Python tool name, which includes writing these example configs through `cat <<EOF`. Use the file tools for such content until step 11.
+**For the skills and docs:** about a quarter of real commands ask because of shell variables (`$f`, `$d`), globs (`docs/*.md`), `for` loops and `S=…` assignments.

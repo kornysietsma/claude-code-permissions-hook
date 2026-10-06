@@ -80,11 +80,24 @@ Each segment is exposed as a JSON object, used both for rule matching and in the
 
 - `name`: the command word after removing quotes, after unwrapping wrappers. A leading `~` is expanded to the home directory.
 - `args`: words after removing quotes, split as bash would. A leading `~` / `~/` is expanded statically.
-- `text`: `name` and `args` joined by spaces, each re-quoted only if needed (single quotes, POSIX-style). It doesn't include env, redirects or wrappers. **Rules match this field.** `^` means "start of this command".
+- `text`: `name` and `args` joined by spaces, each re-quoted only if needed: plain if it matches `[A-Za-z0-9_@%+=:,./-]+`, else single-quoted with `'\''` for embedded quotes (`''` for an empty word). It doesn't include env, redirects or wrappers. **Rules match this field.** `^` means "start of this command".
 - `env`: inline assignments plus assignments from an unwrapped `env`.
-- `redirects`: operator, optional fd, and target (unquoted).
-- `wrappers`: the unwrapped wrapper names, in order (audit only).
-- `source`: the original text of the segment (audit only; best-effort from parser spans).
+- `redirects`: operator (`<`, `>`, `>>`, `<>`, `>|`, `<&`, `>&`, `&>`, `&>>`, `<<`, `<<-`, `<<<`), optional fd, and target (unquoted; the delimiter for heredocs). Redirects on a `( … )` or `{ …; }` group are copied onto every segment inside it.
+- `wrappers`: the unwrapped wrapper names, in order (audit only). The `time` keyword (`time cargo test`) is recorded here too.
+- `source`: the segment as the parser renders it (audit and reasons only). It is normalised, not a slice of the input, e.g. `>log.txt` becomes `> log.txt`.
+
+A pipeline's `!` is ignored. A segment with no command word and only redirects (`> file`) is `unsupported`.
+
+#### Static words
+
+A word is static when its value can be known without running the shell. Its value is built from the parser's pieces:
+
+- unquoted text, single-quoted text, and double-quoted text and escapes are literal. Outside single quotes, `\x` is `x`; inside double quotes, only bash's escapes are removed (`"a\b"` stays `a\b`);
+- `$'…'` is decoded for `\n \t \r \a \b \e \E \f \v \\ \' \" \?`, `\xHH` and octal, and only to ASCII. Any other escape (`\u`, `\U`, `\c`, …) is `unsupported`;
+- a leading `~` (alone or before `/`) is the home directory. `~user`, `~+` and `~-` are `expansion`;
+- anything else (parameter, arithmetic and command substitution, `$"…"`) is `expansion`.
+
+Unquoted text (where quoted parts count as plain characters) is also `expansion` if it contains `$` (brush reads zsh's `${(f)x}` as the text `$` + `{(f)x}`), `*` or `?`, `[` with a later `]`, an extended glob (`+(`, `@(`, `!(`), or a brace expansion (`{…,…}` or `{…..…}`), or if it starts with `=` followed by anything (zsh equals expansion; a lone `=` is static). So `{}`, `HEAD@{1}`, `[` and `a=b` are static.
 
 ### Wrappers (built-in unwrapping)
 
@@ -214,11 +227,12 @@ Non-shell tools evaluate exactly as today.
 
 ### Reasons
 
-Sent to the agent for `deny` and `ask`:
+Sent to the agent with every decision (Copilot and Claude show it for `deny` and `ask`):
 
-- The deciding rule's `reason` if set, else the existing default (`tool-gate-hook: <decision> by <kind> #<index> (<description>)`).
-- Plus the segment or construct it came from: ` — in "<text>"` for a command rule, ` — <construct> in "<segment source>"` for a construct or floor, e.g. `tool-gate-hook: ask — command substitution in arguments, in "cargo test --features $(cat feats)"`.
-- Floors have fixed human-readable descriptions (e.g. `shell_reentry`: "runs a shell or eval", `expansion`: "variable, glob or substitution in arguments").
+- A rule: its `reason` if set, else the default `tool-gate-hook: <decision> by <kind> #<index> (<description>)`, where `<kind>` is `rule`, `command rule` or `construct rule`.
+- A command rule also gets ` — in "<text>"` for the segment it matched, e.g. `tool-gate-hook: ask by command rule #6 (git push) — in "git push"`.
+- A floor: `tool-gate-hook: ask — <description> (<detail>), in "<segment source>"`, leaving out the parts that don't apply. For example: `tool-gate-hook: ask — shell syntax that tool-gate-hook can't check (glob in docs/*.md), in "ls docs/*.md"`.
+- Each floor has a fixed human-readable description (`parse_error`: "the command could not be parsed"; `unsupported`: "shell syntax that tool-gate-hook can't check"). The detail says what triggered it, e.g. `variable in $HOME`, `for loop`, `assignment FOO`.
 
 ### Rule indexes
 
@@ -226,7 +240,9 @@ Each rule kind is numbered separately, 1-based, in file order (`[[rule]]` #1…,
 
 ## Audit record
 
-The existing record gains a `shell` object for shell-tool calls. The raw `payload` is kept (truncated as now). `decided_by` and `matches` entries gain a `kind` (`rule`, `command_rule`, `construct_rule`, `floor`).
+The existing record gains a `shell` object for shell-tool calls. The raw `payload` is kept (truncated as now). `decided_by` and `matches` entries carry a `kind` (`rule`, `command_rule`, `construct_rule`, `floor`); command-rule and floor matches also carry the 1-based `segment` they apply to, when there is one. Floors have no `index`, and their `description` is the construct name (`parse_error`, `unsupported`, …). (Step 2 already writes `kind`, `segment` and floor matches; the `shell` object comes in step 3.)
+
+Top-level `matches` are in evaluation order: `[[rule]]` matches (file order), then floors (textual order), then command-rule matches segment by segment, then construct rules (file order).
 
 ```json
 {
@@ -253,8 +269,7 @@ The existing record gains a `shell` object for shell-tool calls. The raw `payloa
     "constructs": [
       { "construct": "background", "segment": 2, "floor": false },
       { "construct": "redirect_write", "segment": 2, "target": "log.txt", "floor": false }
-    ],
-    "floors": []
+    ]
   },
   "payload": { "…": "raw stdin JSON" },
   "duration_us": 512
