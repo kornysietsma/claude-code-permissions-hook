@@ -110,7 +110,7 @@ Unquoted text (where quoted parts count as plain characters) is also `expansion`
 - `nice`: optional `-n N` / `-nN` / `--adjustment=N`.
 - `nohup`, `time`: no options (`time -p` allowed).
 
-Unrecognised wrapper options → `unsupported` (ask floor). A wrapper with no command following → treated as a plain segment named after the wrapper.
+Unrecognised wrapper options → `unsupported` (ask floor). A wrapper with no command following → treated as a plain segment named after the wrapper. Only bare names are wrappers: `/usr/bin/env` or `./env` stays the command name, since a path could be any program. When a wrapper's options aren't understood, the segment keeps the wrapper as its name.
 
 `sudo` is **not** a wrapper: it's an ordinary command name. The example configs ship an `ask` command rule for it.
 
@@ -138,7 +138,7 @@ Recursion into substitutions still happens when `expansion` fires, so a deny on 
 
 #### Assignment-only segments
 
-A segment with assignments and no command word (`FOO=1`) is neutral, like an in-project `cd`: it needs no command rule, and its names go through `env_assign`. `export`, `declare`, `typeset`, `local` and `readonly` are ordinary commands (they need a command rule to be allowed), but their `NAME=value` arguments are also checked by `env_assign`.
+A segment with assignments and no command word (`FOO=1`) is neutral, like an in-project `cd`: it needs no command rule, and its names go through `env_assign`. `export`, `declare`, `typeset`, `local` and `readonly` are ordinary commands (they need a command rule to be allowed), but their `NAME=value` arguments are also checked by `env_assign`. A neutral segment has empty `text` and `name`. Array assignments (`A=(x y)`, `A[1]=x`) are `unsupported`; substitutions in array values are still walked.
 
 #### `cd` handling
 

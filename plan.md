@@ -10,9 +10,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Status
 
-- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is `af3a07f` (step 4).
-- **Done:** steps 1 to 4.
-- **Next:** step 5, wrappers, `[shell] safe_env` and `env_assign`.
+- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last code commit is `4db2d2a` (step 5).
+- **Done:** steps 1 to 5.
+- **Next:** step 6, the `shell_reentry` and `exec_tool` floors.
 
 ### Working on this branch
 
@@ -27,21 +27,23 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 - **Local corpus** (gitignored, may contain private paths):
   - build it with `scripts/shell-corpus.sh ~/.local/share/tool-gate-hook/claude.jsonl`, which writes `tests/fixtures/shell/corpus.local.jsonl` (one JSON string per line);
   - summarise it with `cargo test --test shell_corpus -- --ignored --nocapture`, which lists each floor's details per command;
-  - after step 4, 122 of 162 commands hit no floor. Most floors are `$VAR` from `S=…` assignments, and globs.
+  - after step 5, 122 of 162 commands hit no floor. Most floors are `$VAR` from `S=…` assignments (20 `env_assign`), and globs.
+- **Corpus expectations** are regenerated with `explain`, an empty config and `--payload` (build each payload with `jq`, as commands can contain newlines), then reviewed with `diff`.
 - **`explain`** is the quickest manual check: `cargo run -q -- explain --agent claude --config examples/claude.toml --cwd /tmp 'COMMAND' | jq …`. An empty config file shows the bare analysis.
 
 ## Technical context
 
-### Code shape (as of step 4)
+### Code shape (as of step 5)
 
 | Module | Contents | Still to come |
 |--------|----------|---------------|
-| `src/shell/mod.rs` | `analyse(command, home) -> Analysis`; the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording. `file_redirect()` records `redirect_read`/`redirect_write`. | Floors `EnvAssign` (5), `ShellReentry`, `ExecTool` (6), `Cd` (7); wrappers and env (5); `cd` and the effective directory (7). `analyse` will need `cwd` and `[shell]` settings. |
+| `src/shell/mod.rs` | `analyse(command, home, settings) -> Analysis`; `Settings { safe_env }` (the `[shell]` config); the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment` (with `kind: SegmentKind`, `#[serde(skip)]`, and `is_neutral()`), `SegmentKind::{Command, AssignmentOnly}`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`, `EnvAssign`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording; `value(raw, shown, …)` classifies `raw` but reports `shown` (an assignment's value is reported as the whole `NAME=value`). `simple()` puts prefix assignments in `env` (`assignment()`), checks names with `check_env_name()` (prefix, `env NAME=…`, and the `DECLARATIONS` builtins' args via `assigned_name()`), and calls `unwrap()`. `file_redirect()` records `redirect_read`/`redirect_write`. | Floors `ShellReentry`, `ExecTool` (6), `Cd` (7); `cd` and the effective directory (7), as `SegmentKind::Cd` (add it to `is_neutral`). `analyse` will need `cwd`. |
+| `src/shell/wrappers.rs` | `unwrap(name, args) -> Result<Unwrapped { wrappers, env, name, args }, String>`: peels `env`, `timeout`, `nice`, `nohup` and `time` (bare names only), with each one's option grammar; `Err` is the `unsupported` detail. Unit tests. | |
 | `src/shell/words.rs` | `analyse(raw, home, options) -> WordInfo { value: Result<String, NotStatic>, substitutions }`, `analyse_heredoc(raw, options)`; `NotStatic::{Expansion, Unsupported}(why)`; `$'…'` decoding; `quote()` for `text`. Unit tests. | |
 | `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`; `Agent::shell_payload(command, cwd)`, a minimal payload used by `explain` and tests. | |
-| `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[[command_rule]]`; the errors for an allow `[[rule]]` that can match the shell tool, and for a command rule with no conditions. | `[shell]` (5), `paths_under` (7), `[[construct_rule]]` (8). |
-| `src/policy.rs` | `Policy { rules, command_rules, shell_tool }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }`; the combiner in `Policy::evaluate`; `floor_match`. | Neutral segments (5, 7), `paths_under` (7), `ConstructRule` kind and evaluation (8). |
-| `src/auditing.rs` | `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated); the caller checks the level with `AuditConfig::records`. `AuditRecord::for_explanation(…, truncated)` adds `reason`. `is_truncated`, `truncate_json_strings`. | `"decision": "neutral"` for neutral segments (5, 7). |
+| `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[shell]` (`RawShell`, `safe_env` compiled with `compile_regexes`, so `@patterns` work); `[[command_rule]]`; the errors for an allow `[[rule]]` that can match the shell tool, and for a command rule with no conditions. | `paths_under` (7), `[[construct_rule]]` (8). |
+| `src/policy.rs` | `Policy { rules, command_rules, shell_tool, shell: shell::Settings }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }` (`None` for neutral segments, which rules never see); the combiner in `Policy::evaluate` skips neutral segments and needs at least one non-neutral one to allow; `floor_match`. | `paths_under` (7), `ConstructRule` kind and evaluation (8). |
+| `src/auditing.rs` | `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated; a neutral segment's `decision` is `"neutral"`); the caller checks the level with `AuditConfig::records`. `AuditRecord::for_explanation(…, truncated)` adds `reason`. `is_truncated`, `truncate_json_strings`. | |
 | `src/validate.rs` | Summary lines for rules and command rules. | Construct rules, `safe_env`, segment-field warnings (9). |
 | `src/lib.rs`, `src/main.rs` | `run`, `validate`, and `explain` (`lib::explain(agent, config_path, input, context) -> Result<Explanation { record, warnings }>`; the input is a payload or an audit record; `--payload -` reads stdin). | |
 
@@ -49,7 +51,7 @@ Tests:
 
 | File | Contents |
 |------|----------|
-| `tests/shell.rs` | Acceptance tests through `run` for both agents, with one shared `CONFIG` (rule numbers are referenced in reason assertions, so append new rules at the end). Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. Put helpers here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
+| `tests/shell.rs` | Acceptance tests through `run` for both agents, with one shared `CONFIG` (it has `[patterns]` and `[shell] safe_env` for `RUST_LOG`, `RUST_BACKTRACE` and `NO_COLOR`; rule numbers are referenced in reason assertions, so append new rules at the end). Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. Put helpers here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
 | `tests/shell_differential.rs` | `AGREED` (static commands zsh, bash and we split identically) and `DISAGREED` (must hit a floor). |
 | `tests/shell_corpus.rs` | `curated_corpus_is_analysed_as_expected` checks `tests/fixtures/shell/corpus.jsonl`: sanitised real commands with expected segment names and floors. To add cases, generate the expectations with `explain`, an empty config and `jq`, then review them. Plus the ignored local-corpus summary. |
 | `tests/audit.rs` | Audit records, including the full `shell` shape (`shell_record_shows_each_segment_and_construct`) and truncation inside `shell`. |
@@ -69,8 +71,8 @@ Tests:
 
 ### brush-parser facts needed for later steps
 
-- **Assignments**: `CommandPrefixOrSuffixItem::AssignmentWord(Assignment { name: AssignmentName, value: Scalar(Word) | Array(..), append, .. }, Word)`, in the prefix for `FOO=1 cmd`, and in the suffix for declaration builtins (`export X=1`). An assignment-only command is a `SimpleCommand` with `word_or_name: None`. Treat array values as unsupported.
-- **`time`** is `Pipeline.timed`; **`!`** is `Pipeline.bang`. Pipeline items are `(PipelineOperator, &Pipeline)` from `AndOrList::iter()`. `PipelineOperator` has no `Debug`.
+- **Assignments**: `CommandPrefixOrSuffixItem::AssignmentWord(Assignment { name: AssignmentName, value: Scalar(Word) | Array(..), append, .. }, Word)`, where the `Word` is the whole `NAME=value`. In the prefix for `FOO=1 cmd`; in the suffix for **any** `NAME=value`-shaped arg (`make CC=gcc`, `echo a=b`), not just declaration builtins, so the walker decides by command name. An assignment-only command is a `SimpleCommand` with `word_or_name: None`.
+- **`time`** is `Pipeline.timed` (`Timed` or `TimedWithPosixOutput` for `time -p`); **`!`** is `Pipeline.bang`. Pipeline items are `(PipelineOperator, &Pipeline)` from `AndOrList::iter()`. `PipelineOperator` has no `Debug`.
 - **Redirects** carry no source location; **source spans** are character indexes, so use the `Display` rendering of `SimpleCommand` for `source`.
 - **Parse errors** come back as `Err` (never seen to panic).
 - A quoted heredoc delimiter arrives raw (`'EOF'`); the walker unquotes it.
@@ -83,32 +85,13 @@ Tests:
 
 ## Steps
 
-### Steps 1–4 ✅
+### Steps 1–5 ✅
 
 1. **brush-parser spike.** brush-parser 0.4.0 is in.
 2. **First end-to-end slice.** Segments; command rules on `text`/`name`; the `parse_error` and `unsupported` floors; an allow `[[rule]]` on the shell tool is a config error; the examples migrated; differential tests against zsh and bash.
 3. **Audit `shell` object and `explain`.** Including the `reason` in `explain` output, and `ask` for truncated audit records.
 4. **Substitutions, expansions, dynamic command names.** Word classification; the `expansion` and `dynamic_command` floors; recursion into substitutions (depth 16); unquoted heredoc bodies; non-floor constructs recorded; the curated corpus; `====`-style words are static.
-
-### Step 5: wrappers, `[shell] safe_env`, `env_assign`
-
-- [ ] `[shell]` config with `safe_env` (regexes and `@patterns`); unknown keys are errors.
-- [ ] Inline assignment prefixes go to `env`. Assignment-only segments are neutral (`SegmentKind::AssignmentOnly`, skipped by the combiner's "every segment" check). The `NAME=value` args of `export`, `declare`, `typeset`, `local` and `readonly` are checked too (step 2 treats them as plain args).
-- [ ] The `EnvAssign` floor for names not matching `safe_env`. This replaces step 2's temporary `Unsupported` for prefix assignments and assignment-only commands.
-- [ ] Wrapper unwrapping (`env`, `timeout`, `nice`, `nohup`; `time` is already recorded) with the spec's option grammar; unknown options are `Unsupported`. `wrappers` is recorded.
-- [ ] Example configs: add a `[shell] safe_env` list.
-
-**Automated:**
-- `RUST_LOG=debug cargo test` and `env RUST_LOG=debug cargo test` → allow with `safe_env`;
-- `GIT_PAGER=x git log`, `PATH=./evil cargo test`, `PATH=./evil; cargo test` and `export GIT_PAGER=x; git log` → ask;
-- `FOO=1` alone → passthrough (only neutral segments);
-- `RUST_LOG=$x cargo test` → ask (`expansion` in the env value), and `X=$(curl x)` → deny with a curl deny rule;
-- `timeout 60 cargo test`, `timeout -s KILL 60 cargo test` and `nice -n 5 cargo test` → allow;
-- `timeout --bogus 60 cargo test` and `env -i cargo test` → ask;
-- bare `timeout` → a segment named `timeout`;
-- unit tests for each wrapper's option parsing.
-
-**Manual:** `explain 'env RUST_LOG=debug timeout 60 cargo test'` and check the `env` and `wrappers` fields.
+5. **Wrappers, `[shell] safe_env`, `env_assign`.** Prefix and `env` assignments go to `env`; the `env_assign` floor (also for declaration builtins' args); assignment-only segments are neutral; array assignments are `unsupported`; `env`/`timeout`/`nice`/`nohup`/`time` unwrapped (bare names only); `safe_env` in the claude and copilot examples.
 
 ### Step 6: `shell_reentry` and `exec_tool` floors
 
@@ -201,11 +184,14 @@ Tests:
 
 ## Notes for later steps
 
-**For step 5 (where assignments are handled now):**
-- In `Walker::simple`, a prefix `AssignmentWord` records `Unsupported("assignment NAME")` and only walks the substitutions in its value; suffix assignments (`export X=1`) are plain args. Replace this with `env` entries plus the `EnvAssign` floor, and classify the value with `self.word(…)` (probably a new `Role` so the detail reads e.g. `variable in env FOO`) so that `FOO=$x cmd` hits `expansion`.
-- An assignment-only command (`word_or_name: None`) currently gets two floors: `assignment X` and `no command word in …`. It should become a neutral segment instead; keep `no command word` only for redirect-only commands (`> file`), which stay `unsupported` for good.
-- Neutral segments need a segment kind: the combiner's "every segment allowed" check skips them, and the audit shows `"decision": "neutral"` (`segment_decisions` is `Vec<Option<Decision>>` today).
-- `wrappers` is only filled with `time` today (in `Walker::commands`). Unwrap after the name and args are computed as static strings.
+**From step 5 (assignments and wrappers):**
+- A neutral segment has empty `text` and `name`. Step 7's `cd` segments are neutral the same way: add `SegmentKind::Cd` and return `true` for it in `Segment::is_neutral`; the combiner and audit then need no change.
+- Wrappers are unwrapped only when the name is bare (`env`, not `/usr/bin/env` or `./env`, which could be anything). An absolute-path wrapper stays the command name, so it passes through unless a rule names it. Step 6's `shell_reentry` check runs on the unwrapped name, so `env bash -c …` and `timeout 5 sh x` are caught.
+- When unwrapping fails (unknown option), the segment keeps the wrapper as its name, with no `wrappers`.
+- A non-static word after a wrapper (`timeout 60 $CMD`) becomes the name, but hits `expansion` (not `dynamic_command`), since it was classified as an arg.
+- **For step 8's harmless builtins:** `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v`, and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided: handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
+- **For step 7:** bash (not zsh) tilde-expands after `=` in assignment-like args (`make CC=~/x` passes `CC=/home/…/x`); the segment shows the literal `~`. Only the `--opt=value` part is path-like, and `--opt` isn't a valid name, so `paths_under` is unaffected; keep it that way.
+- **For step 9:** review the `env_assign` description ("a variable not listed in [shell] safe_env") with the other floor texts.
 
 **Example and test facts:**
 - `cargo test > /etc/x` is still allowed by the examples' cargo rule, as it was by the old regex rule; step 8's `redirect_write` rule fixes it.
