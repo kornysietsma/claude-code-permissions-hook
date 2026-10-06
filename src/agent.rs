@@ -32,6 +32,23 @@ impl Agent {
         }
     }
 
+    /// A minimal shell tool payload running `command` in `cwd`
+    pub fn shell_payload(self, command: &str, cwd: &Path) -> Value {
+        match self {
+            Agent::Claude => json!({
+                "hook_event_name": "PreToolUse",
+                "cwd": cwd,
+                "tool_name": self.shell_tool().name,
+                "tool_input": { "command": command },
+            }),
+            Agent::Copilot => json!({
+                "cwd": cwd,
+                "toolName": self.shell_tool().name,
+                "toolArgs": { "command": command },
+            }),
+        }
+    }
+
     pub fn default_config_path(self, home: &Path) -> PathBuf {
         home.join(".config")
             .join("tool-gate-hook")

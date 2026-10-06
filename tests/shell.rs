@@ -5,24 +5,11 @@ mod common;
 use common::run_with_config;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use std::path::Path;
 use tool_gate_hook::{Agent, Outcome};
 
-/// A minimal shell tool payload for `agent`
 fn shell_payload(agent: Agent, command: &str) -> String {
-    let payload = match agent {
-        Agent::Claude => serde_json::json!({
-            "hook_event_name": "PreToolUse",
-            "cwd": "/tmp",
-            "tool_name": "Bash",
-            "tool_input": { "command": command },
-        }),
-        Agent::Copilot => serde_json::json!({
-            "cwd": "/tmp",
-            "toolName": "bash",
-            "toolArgs": { "command": command },
-        }),
-    };
-    payload.to_string()
+    agent.shell_payload(command, Path::new("/tmp")).to_string()
 }
 
 const CONFIG: &str = r#"

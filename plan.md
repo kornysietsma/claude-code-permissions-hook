@@ -11,8 +11,8 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 ## Status
 
 - **Branch** `shell-parsing`, not pushed; the PR is raised at the end.
-- **Done:** step 1 (brush-parser spike) and step 2 (compound commands allowed by command rules). The last commit is `01fc0aa`.
-- **Next:** step 3, the audit `shell` object and `explain`.
+- **Done:** step 1 (brush-parser spike), step 2 (compound commands allowed by command rules) and step 3 (audit `shell` object and `explain`).
+- **Next:** step 4, substitutions, expansions and dynamic command names.
 
 ### Working on this branch
 
@@ -29,26 +29,28 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Technical context
 
-### Code shape (as of step 2)
+### Code shape (as of step 3)
 
 | Module | Contents | Still to come |
 |--------|----------|---------------|
 | `src/shell/mod.rs` | `analyse(command, home) -> Analysis`, the allow-listed `Walker`, `Segment`, `Redirect`, `Construct`, `ConstructKind` (`ParseError`, `Unsupported` so far; `name()`, `is_floor()`, `describe()`), and `Analysis::unsupported(detail)`. | Recursion (4), other constructs and floors (4–7), wrappers and env (5), `cd` and effective directory (7). `analyse` will need `cwd` and `[shell]` settings. |
 | `src/shell/words.rs` | `static_value(raw, home, options) -> Result<String, why>`, `$'…'` decoding, `quote()` for `text`, with unit tests. | Distinguishing expansion kinds for the `Expansion` and `DynamicCommand` floors (4). |
-| `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`. | `Agent::shell_payload(command, cwd)` for `explain` (3). |
+| `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`; `Agent::shell_payload(command, cwd)` (a minimal payload, used by `explain` and tests). | |
 | `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[[command_rule]]`; the errors for an allow `[[rule]]` that can match the shell tool, and for a command rule with no conditions. | `[[construct_rule]]` (8), `[shell]` (5), `paths_under` (7). |
 | `src/policy.rs` | `Policy { rules, command_rules, shell_tool }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions }> }`; the combiner in `Policy::evaluate`; `floor_match`. | `ConstructRule` kind and evaluation (8), `paths_under` (7). |
-| `src/auditing.rs` | `DecidedBy` / `MatchedRule` with `kind`, optional `index` and `segment`. | The `shell` object (3). |
+| `src/auditing.rs` | `DecidedBy` / `MatchedRule` with `kind`, optional `index` and `segment`. `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated); the caller checks the level with `AuditConfig::records`. Segment `matches` are the command-rule matches for that segment, without `segment`. | Neutral segment decisions (5, 7), construct `target` for `redirect_write` (8). |
 | `src/validate.rs` | Summary lines for rules and command rules. | Construct rules, `safe_env`, segment-field warnings (9). |
-| `src/lib.rs`, `src/main.rs` | `run` and `validate`, unchanged in shape. | `explain` (3). |
+| `src/lib.rs`, `src/main.rs` | `run`, `validate` and `explain` (`lib::explain(agent, config_path, input, context) -> Result<Value>`; input is a payload or an audit record, unwrapped by its `payload` key; `--payload -` reads stdin). | |
 
 Tests:
 
 | File | Contents |
 |------|----------|
-| `tests/shell.rs` | Acceptance tests through `run` for both agents. Has its own `shell_payload(agent, command)` helper (cwd `/tmp`). Put a helper here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
+| `tests/shell.rs` | Acceptance tests through `run` for both agents. Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. Put a helper here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
 | `tests/shell_differential.rs` | `AGREED` (static commands zsh, bash and we split identically) and `DISAGREED` (must hit a floor). |
 | `tests/shell_corpus.rs` | The ignored local-corpus summary. |
+| `tests/audit.rs` | Audit records, including the full `shell` shape (`shell_record_shows_each_segment_and_construct`) and truncation inside `shell`. |
+| `tests/explain.rs` | `lib::explain` with both input forms, both agents, and errors. `tests/smoke.rs` spawns the `explain` CLI. |
 | `tests/examples.rs` | The example configs, including legacy-python cases. `legacy_python_inside_substitutions_is_not_allowed` asserts only "not allowed" until step 4. |
 
 ### Design decisions
@@ -87,15 +89,15 @@ Done. brush-parser 0.4.0 is in; the facts above came from the spike.
 
 Done. Shell calls are analysed into segments. Command rules on `text` or `name` allow, ask or deny per segment; `parse_error` and `unsupported` floors ask. An allow `[[rule]]` that can match the shell tool is a config error. The examples and tests are migrated, and there are differential tests against zsh and bash.
 
-### Step 3: audit `shell` object and `explain`
+### Step 3: audit `shell` object and `explain` ✅
 
 Built early so every later step can be checked by hand.
 
-- [ ] Audit: the `shell` object, built from `Evaluation::shell`. Segments get their own `matches` and `decision` (`allow`, `ask`, `deny` or null; `neutral` comes in steps 5 and 7). Constructs get `construct`, a 1-based `segment`, `detail` and `floor`. Truncate string values in `shell` with `max_value_len`, as for the payload (`truncate_json_strings`). A shell call with any floor counts as "matched" (it already does, because floors are matches).
-- [ ] `lib::explain(agent, config_path, input, context) -> Result<Value>`: the same evaluation as `run`, with the record built as if `level = "all"` and `max_value_len = 0`. Config errors are returned as `Err`. Share the evaluation code with `run` rather than duplicating it.
-- [ ] `Agent::shell_payload(command, cwd) -> Value`.
-- [ ] CLI: `explain --agent A [--config C] [--cwd D] (COMMAND | --payload FILE)`. `--payload` accepts a raw payload or an audit record (take its `payload`). `--cwd` defaults to the current directory. Pretty-print the JSON. Exit 1 on errors.
-- [ ] Smoke test: spawn `explain` on a compound command and on an audit record file; parse the JSON; check the decision and segment count.
+- [x] Audit: the `shell` object, built from `Evaluation::shell`. Segments get their own `matches` and `decision` (`allow`, `ask`, `deny` or null; `neutral` comes in steps 5 and 7). Constructs get `construct`, a 1-based `segment`, `detail` and `floor`. Truncate string values in `shell` with `max_value_len`, as for the payload (`truncate_json_strings`). A shell call with any floor counts as "matched" (it already does, because floors are matches).
+- [x] `lib::explain(agent, config_path, input, context) -> Result<Value>`: the same evaluation as `run`, with the record built as if `level = "all"` and `max_value_len = 0`. Config errors are returned as `Err`. Share the evaluation code with `run` rather than duplicating it.
+- [x] `Agent::shell_payload(command, cwd) -> Value`.
+- [x] CLI: `explain --agent A [--config C] [--cwd D] (COMMAND | --payload FILE)`. `--payload` accepts a raw payload or an audit record (take its `payload`). `--cwd` defaults to the current directory. Pretty-print the JSON. Exit 1 on errors.
+- [x] Smoke test: spawn `explain` on a compound command and on an audit record file; parse the JSON; check the decision and segment count.
 
 **Automated:** audit tests for the `shell` shape (a full `assert_eq!` on one representative record), truncation inside `shell`, and `explain` with both input forms and with a broken config.
 
@@ -243,5 +245,11 @@ Redirect-only commands (`> file`) stay `Unsupported` for good (spec).
 - The mermaid example lost its `echo $$-$RANDOM` rule: `$` expansion is a floor, so it can never be allowed, and the test asserts it asks.
 - `cargo test > /etc/x` is still allowed by the examples' cargo rule, as it was by the old regex rule; step 8's `redirect_write` rule fixes it.
 - In audit records, `[[rule]]` matches now come before command-rule matches. `tests/audit.rs` `deny_wins_and_all_matches_are_recorded_rules_first` pins this.
+
+**From step 3:**
+- serde_json now has the `preserve_order` feature, so records (and `explain` output) keep struct order and the payload's own key order instead of sorting keys.
+- brush renders `2>&1` as `2>& 1` in `source`. It's harmless, but it shows in reasons and in `explain`.
+- `explain` output adds a `reason` (the text the agent would see) after `decision`; audit records never have it (`AuditRecord::for_explanation`).
+- `explain` on an audit record whose payload was truncated (`auditing::is_truncated`) shows `decision: ask` with a truncation reason and no `decided_by`, and warns on stderr; the evaluated segments and matches are still shown.
 
 **For the skills and docs:** about a quarter of real commands ask because of shell variables (`$f`, `$d`), globs (`docs/*.md`), `for` loops and `S=…` assignments.

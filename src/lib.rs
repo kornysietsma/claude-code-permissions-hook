@@ -78,10 +78,18 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
     match Config::load(config_path, agent) {
         Ok(config) => {
             let evaluation = config.policy.evaluate(&payload, &call, context);
-            let audit = config.audit.and_then(|audit| {
-                AuditRecord::for_evaluation(&audit, &invocation(), &payload, &evaluation)
-                    .map(|record| (audit.file, record))
-            });
+            let audit = config
+                .audit
+                .filter(|audit| audit.records(!evaluation.matches.is_empty()))
+                .map(|audit| {
+                    let record = AuditRecord::for_evaluation(
+                        &invocation(),
+                        &payload,
+                        &evaluation,
+                        audit.max_value_len,
+                    );
+                    (audit.file, record)
+                });
             Outcome {
                 output: evaluation
                     .decided_by()
@@ -102,6 +110,50 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
             }
         }
     }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Explanation {
+    pub record: Value,
+    /// Problems to report on stderr
+    pub warnings: Vec<String>,
+}
+
+/// The full audit record `run` would give `input` (a payload, or an audit record holding one),
+/// whatever the config's audit settings say, plus the reason the agent would be given.
+/// Unlike `run`, problems are errors.
+pub fn explain(
+    agent: Agent,
+    config_path: &Path,
+    input: &str,
+    context: &Context,
+) -> Result<Explanation> {
+    let started = (context.clock)();
+    let input: Value = serde_json::from_str(input).context("input is not valid JSON")?;
+    let (payload, truncated) = match input.get("payload") {
+        Some(payload) => (payload.clone(), auditing::is_truncated(payload)),
+        None => (input, false),
+    };
+    let call = agent.parse(&payload)?;
+    let config = Config::load(config_path, agent)
+        .with_context(|| format!("invalid config {}", config_path.display()))?;
+    let evaluation = config.policy.evaluate(&payload, &call, context);
+    let invocation = Invocation {
+        agent,
+        config_path,
+        started,
+        finished: (context.clock)(),
+    };
+    let record = AuditRecord::for_explanation(&invocation, &payload, &evaluation, truncated);
+    let warnings = if truncated {
+        vec![format!("tool-gate-hook: {}", auditing::TRUNCATED_REASON)]
+    } else {
+        vec![]
+    };
+    Ok(Explanation {
+        record: serde_json::to_value(record)?,
+        warnings,
+    })
 }
 
 fn parse_payload(agent: Agent, stdin: &str) -> Result<(Value, ToolCall)> {

@@ -89,10 +89,126 @@ fn allow_record_has_every_field() {
             "matches": [
                 { "kind": "command_rule", "index": 1, "decision": "allow", "description": "any bash", "segment": 1 }
             ],
+            "shell": {
+                "segments": [
+                    {
+                        "text": "cargo test --all", "name": "cargo", "args": ["test", "--all"],
+                        "env": {}, "redirects": [], "wrappers": [], "source": "cargo test --all",
+                        "matches": [
+                            { "kind": "command_rule", "index": 1, "decision": "allow", "description": "any bash" }
+                        ],
+                        "decision": "allow"
+                    }
+                ],
+                "constructs": []
+            },
             "payload": serde_json::from_str::<Value>(&fixture("bash")).unwrap(),
             "duration_us": 0
         }))
     );
+}
+
+fn bash_with_command(command: &str) -> String {
+    let mut payload: Value = serde_json::from_str(&fixture("bash")).unwrap();
+    payload["tool_input"]["command"] = json!(command);
+    payload.to_string()
+}
+
+#[test]
+fn shell_record_shows_each_segment_and_construct() {
+    let rules = r#"
+[[command_rule]]
+decision = "allow"
+description = "cargo build"
+match.text = { regex = '^cargo build\b' }
+
+[[command_rule]]
+decision = "ask"
+description = "git push"
+match.text = { regex = '^git push\b' }
+"#;
+    let stdin = bash_with_command("cargo build 2>&1 && git push && ls $HOME > out.txt");
+    let record = run_claude("matched", rules, &stdin).record().unwrap();
+
+    assert_eq!(
+        record["shell"],
+        json!({
+            "segments": [
+                {
+                    "text": "cargo build", "name": "cargo", "args": ["build"], "env": {},
+                    "redirects": [ { "op": ">&", "fd": 2, "target": "1" } ], "wrappers": [],
+                    "source": "cargo build 2>& 1",
+                    "matches": [
+                        { "kind": "command_rule", "index": 1, "decision": "allow", "description": "cargo build" }
+                    ],
+                    "decision": "allow"
+                },
+                {
+                    "text": "git push", "name": "git", "args": ["push"], "env": {},
+                    "redirects": [], "wrappers": [], "source": "git push",
+                    "matches": [
+                        { "kind": "command_rule", "index": 2, "decision": "ask", "description": "git push" }
+                    ],
+                    "decision": "ask"
+                },
+                {
+                    "text": "ls '$HOME'", "name": "ls", "args": ["$HOME"], "env": {},
+                    "redirects": [ { "op": ">", "target": "out.txt" } ], "wrappers": [],
+                    "source": "ls $HOME > out.txt",
+                    "matches": [],
+                    "decision": null
+                }
+            ],
+            "constructs": [
+                { "construct": "unsupported", "segment": 3, "detail": "variable in $HOME", "floor": true }
+            ]
+        })
+    );
+    assert_eq!(
+        record["decided_by"],
+        json!({ "kind": "floor", "description": "unsupported" })
+    );
+}
+
+#[test]
+fn constructs_without_a_segment_leave_it_out() {
+    let record = run_claude("matched", ALLOW_BASH, &bash_with_command("echo 'open"))
+        .record()
+        .unwrap();
+
+    assert_eq!(record["shell"]["segments"], json!([]));
+    assert_eq!(
+        record["shell"]["constructs"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        vec!["construct", "detail", "floor"]
+    );
+}
+
+#[test]
+fn non_shell_records_have_no_shell_object() {
+    let record = run_claude("all", ALLOW_BASH, &fixture("read"))
+        .record()
+        .unwrap();
+
+    assert_eq!(record.get("shell"), None);
+}
+
+#[test]
+fn strings_in_the_shell_object_are_truncated() {
+    let long = "x".repeat(30);
+    let stdin = bash_with_command(&format!("echo {long}"));
+    let record = run_claude_with("level = \"all\"\nmax_value_len = 10", ALLOW_BASH, &stdin)
+        .record()
+        .unwrap();
+
+    let cut = format!("{}…[truncated, 30 chars]", "x".repeat(10));
+    let segment = &record["shell"]["segments"][0];
+    assert_eq!(segment["args"], json!([cut]));
+    assert_eq!(segment["name"], "echo");
+    assert_eq!(segment["text"], "echo xxxxx…[truncated, 35 chars]");
 }
 
 #[test]

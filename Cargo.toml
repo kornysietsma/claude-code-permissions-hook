@@ -12,7 +12,7 @@ repository = "https://github.com/kornysietsma/tool-gate-hook"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 toml = "1.1.6"
 regex = "1.13.1"
 chrono = { version = "0.4.45", features = ["serde"] }

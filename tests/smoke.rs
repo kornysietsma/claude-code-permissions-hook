@@ -301,3 +301,70 @@ fn validate_warns_about_field_paths_unknown_to_the_agent_without_failing() {
     assert!(!warnings.contains("outside cwd"), "{warnings}");
     assert!(stdout(&output).contains("3 rules"));
 }
+
+fn explain(dir: &Path, extra_args: &[&str], stdin: &str) -> Output {
+    let audit_file = dir.join("audit.jsonl");
+    let config = audited_config(dir, &audit_file);
+    let mut args = vec!["explain", "--agent", "claude", "--config"];
+    args.push(config.to_str().unwrap());
+    args.extend(extra_args);
+    let output = tool_gate_hook(dir, &args, stdin);
+    assert!(!audit_file.exists(), "explain wrote an audit record");
+    output
+}
+
+fn explained(output: &Output) -> serde_json::Value {
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(output));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn explain_prints_the_record_for_a_command() {
+    let dir = TempDir::new().unwrap();
+    let output = explain(dir.path(), &["--cwd", "/tmp", "ls -la && ls src"], "");
+
+    let record = explained(&output);
+    assert_eq!(record["decision"], "allow");
+    assert_eq!(record["shell"]["segments"].as_array().unwrap().len(), 2);
+    assert_eq!(record["payload"]["cwd"], "/tmp");
+}
+
+#[test]
+fn explain_reads_an_audit_record_from_a_file_or_stdin() {
+    let dir = TempDir::new().unwrap();
+    let record_file = dir.path().join("record.json");
+    let record = format!(r#"{{"decision": "allow", "payload": {BASH_PAYLOAD}, "duration_us": 1}}"#);
+    std::fs::write(&record_file, &record).unwrap();
+
+    for (args, stdin) in [
+        (vec!["--payload", record_file.to_str().unwrap()], ""),
+        (vec!["--payload", "-"], record.as_str()),
+    ] {
+        let record = explained(&explain(dir.path(), &args, stdin));
+        assert_eq!(record["decision"], "allow");
+        assert_eq!(record["shell"]["segments"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn explain_fails_on_a_missing_config_or_bad_input() {
+    let dir = TempDir::new().unwrap();
+    let missing = tool_gate_hook(
+        dir.path(),
+        &[
+            "explain",
+            "--agent",
+            "claude",
+            "--config",
+            "/nonexistent.toml",
+            "ls",
+        ],
+        "",
+    );
+    let garbage = explain(dir.path(), &["--payload", "-"], "garbage");
+
+    for output in [missing, garbage] {
+        assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+        assert!(output.stdout.is_empty());
+    }
+}

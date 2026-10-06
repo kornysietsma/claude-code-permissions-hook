@@ -240,7 +240,7 @@ Each rule kind is numbered separately, 1-based, in file order (`[[rule]]` #1…,
 
 ## Audit record
 
-The existing record gains a `shell` object for shell-tool calls. The raw `payload` is kept (truncated as now). `decided_by` and `matches` entries carry a `kind` (`rule`, `command_rule`, `construct_rule`, `floor`); command-rule and floor matches also carry the 1-based `segment` they apply to, when there is one. Floors have no `index`, and their `description` is the construct name (`parse_error`, `unsupported`, …). (Step 2 already writes `kind`, `segment` and floor matches; the `shell` object comes in step 3.)
+The existing record gains a `shell` object for shell-tool calls. The raw `payload` is kept (truncated as now). `decided_by` and `matches` entries carry a `kind` (`rule`, `command_rule`, `construct_rule`, `floor`); command-rule and floor matches also carry the 1-based `segment` they apply to, when there is one. Floors have no `index`, and their `description` is the construct name (`parse_error`, `unsupported`, …).
 
 Top-level `matches` are in evaluation order: `[[rule]]` matches (file order), then floors (textual order), then command-rule matches segment by segment, then construct rules (file order).
 
@@ -289,7 +289,8 @@ tool-gate-hook explain --agent claude --config path.toml --payload record-or-pay
 ```
 
 - Builds a shell-tool payload for the agent (with `cwd` = `--cwd` or the current directory) from `COMMAND`, or reads `--payload` (a raw payload, or an audit record from which `payload` is taken), and runs it through `run()`.
-- Prints the audit record that would be written, as pretty-printed JSON, regardless of `[audit] level`, with no truncation. Nothing is written to the audit file.
+- Prints the audit record that would be written, as pretty-printed JSON, regardless of `[audit] level`, with no truncation. Nothing is written to the audit file. It adds a `reason` after `decision`: the text the agent would be given (absent for passthrough). Audit records don't have it.
+- An audit record whose payload was truncated by `max_value_len` could hide anything, so it is explained as `ask`, with a reason saying so and a warning on stderr; the segments and matches found in the truncated text are still shown.
 - Exits 0 on any decision; non-zero only for a config that fails to load or unusable input (unlike `run`, which always exits 0).
 
 ## `validate` changes
