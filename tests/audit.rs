@@ -85,8 +85,8 @@ fn allow_record_has_every_field() {
             "agent": "claude",
             "config": run.config(),
             "decision": "allow",
-            "decided_by": { "index": 1, "description": "any bash" },
-            "matches": [ { "index": 1, "decision": "allow", "description": "any bash" } ],
+            "decided_by": { "kind": "rule", "index": 1, "description": "any bash" },
+            "matches": [ { "kind": "rule", "index": 1, "decision": "allow", "description": "any bash" } ],
             "payload": serde_json::from_str::<Value>(&fixture("bash")).unwrap(),
             "duration_us": 0
         }))
@@ -121,14 +121,14 @@ tool = "Read"
     assert_eq!(record["decision"], "deny");
     assert_eq!(
         record["decided_by"],
-        json!({ "index": 3, "description": "no bash" })
+        json!({ "kind": "rule", "index": 3, "description": "no bash" })
     );
     assert_eq!(
         record["matches"],
         json!([
-            { "index": 1, "decision": "allow", "description": "any bash" },
-            { "index": 2, "decision": "ask" },
-            { "index": 3, "decision": "deny", "description": "no bash" }
+            { "kind": "rule", "index": 1, "decision": "allow", "description": "any bash" },
+            { "kind": "rule", "index": 2, "decision": "ask" },
+            { "kind": "rule", "index": 3, "decision": "deny", "description": "no bash" }
         ])
     );
 }
@@ -141,7 +141,7 @@ fn ask_decision_is_recorded() {
         .unwrap();
 
     assert_eq!(record["decision"], "ask");
-    assert_eq!(record["decided_by"], json!({ "index": 1 }));
+    assert_eq!(record["decided_by"], json!({ "kind": "rule", "index": 1 }));
 }
 
 #[test]

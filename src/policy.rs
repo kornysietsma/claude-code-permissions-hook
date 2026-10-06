@@ -21,9 +21,25 @@ pub struct Policy {
     pub rules: Vec<Rule>,
 }
 
+/// Which kind of rule (or built-in check) produced a match
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleKind {
+    Rule,
+}
+
+impl RuleKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuleKind::Rule => "rule",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Rule {
-    /// 1-based position in the config file
+    pub kind: RuleKind,
+    /// 1-based position among the config file's rules of this kind
     pub index: usize,
     pub decision: Decision,
     pub tool: Option<Regex>,
@@ -51,48 +67,68 @@ pub enum FieldMatcher {
     Exists(bool),
 }
 
-#[derive(Debug)]
-pub struct Evaluation<'a> {
-    /// Every matching rule, in file order
-    pub matches: Vec<&'a Rule>,
+/// One rule (or built-in check) that matched a call
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Match {
+    pub kind: RuleKind,
+    pub index: usize,
+    pub decision: Decision,
+    pub description: Option<String>,
+    /// What the agent is told if this match decides the call
+    pub reason: String,
 }
 
-impl Evaluation<'_> {
-    /// The first matching rule with the most restrictive decision; `None` means passthrough
-    pub fn decided_by(&self) -> Option<&Rule> {
-        let decision = self.matches.iter().map(|rule| rule.decision).max()?;
-        self.matches
-            .iter()
-            .copied()
-            .find(|rule| rule.decision == decision)
+#[derive(Debug)]
+pub struct Evaluation {
+    /// Every match, in evaluation order
+    pub matches: Vec<Match>,
+    /// Index into `matches` of the deciding match; `None` means passthrough
+    decided_by: Option<usize>,
+}
+
+impl Evaluation {
+    pub fn decided_by(&self) -> Option<&Match> {
+        self.decided_by.map(|i| &self.matches[i])
     }
 }
 
+/// The first match with the most restrictive decision
+fn most_restrictive(matches: &[Match]) -> Option<usize> {
+    let decision = matches.iter().map(|m| m.decision).max()?;
+    matches.iter().position(|m| m.decision == decision)
+}
+
 impl Policy {
-    pub fn evaluate(&self, payload: &Value, call: &ToolCall, context: &Context) -> Evaluation<'_> {
+    pub fn evaluate(&self, payload: &Value, call: &ToolCall, context: &Context) -> Evaluation {
+        let matches: Vec<Match> = self
+            .rules
+            .iter()
+            .filter(|rule| rule.matches_call(payload, call, context))
+            .map(Rule::to_match)
+            .collect();
         Evaluation {
-            matches: self
-                .rules
-                .iter()
-                .filter(|rule| rule.matches(payload, call, context))
-                .collect(),
+            decided_by: most_restrictive(&matches),
+            matches,
         }
     }
 }
 
 impl Rule {
-    fn matches(&self, payload: &Value, call: &ToolCall, context: &Context) -> bool {
+    fn matches_call(&self, payload: &Value, call: &ToolCall, context: &Context) -> bool {
         self.tool
             .as_ref()
             .is_none_or(|tool| tool.is_match(&call.tool_name))
-            && self
-                .fields
-                .iter()
-                .all(|field| field.matches(payload, call, context))
+            && self.matches_value(payload, &call.cwd, context)
+    }
+
+    fn matches_value(&self, value: &Value, cwd: &Path, context: &Context) -> bool {
+        self.fields
+            .iter()
+            .all(|field| field.matches(value, cwd, context))
     }
 
     pub fn label(&self) -> String {
-        rule_label(self.index, self.description.as_deref())
+        rule_label(self.kind, self.index, self.description.as_deref())
     }
 
     pub fn reason(&self) -> String {
@@ -104,10 +140,20 @@ impl Rule {
             )
         })
     }
+
+    fn to_match(&self) -> Match {
+        Match {
+            kind: self.kind,
+            index: self.index,
+            decision: self.decision,
+            description: self.description.clone(),
+            reason: self.reason(),
+        }
+    }
 }
 
 impl FieldCondition {
-    fn matches(&self, payload: &Value, call: &ToolCall, context: &Context) -> bool {
+    fn matches(&self, payload: &Value, cwd: &Path, context: &Context) -> bool {
         let value = lookup(payload, &self.path);
         let text = value.and_then(as_text);
         self.matchers.iter().all(|matcher| match (matcher, &text) {
@@ -120,10 +166,10 @@ impl FieldCondition {
             (FieldMatcher::Equals(expected), Some(text)) => text == expected,
             (FieldMatcher::Glob(glob), Some(text)) => glob.is_match(text.as_ref()),
             (FieldMatcher::Under(dirs), Some(text)) => {
-                let target = paths::resolve(Path::new(text.as_ref()), &call.cwd);
+                let target = paths::resolve(Path::new(text.as_ref()), cwd);
                 dirs.iter().any(|dir| {
-                    let dir = paths::expand_dir(dir, &context.home, &call.cwd);
-                    target.starts_with(paths::resolve(&dir, &call.cwd))
+                    let dir = paths::expand_dir(dir, &context.home, cwd);
+                    target.starts_with(paths::resolve(&dir, cwd))
                 })
             }
         })
@@ -141,10 +187,11 @@ impl Decision {
 }
 
 /// How messages refer to a rule, e.g. `rule #2 (rm test files)`
-pub(crate) fn rule_label(index: usize, description: Option<&str>) -> String {
+pub(crate) fn rule_label(kind: RuleKind, index: usize, description: Option<&str>) -> String {
+    let kind = kind.as_str().replace('_', " ");
     match description {
-        Some(description) => format!("rule #{index} ({description})"),
-        None => format!("rule #{index}"),
+        Some(description) => format!("{kind} #{index} ({description})"),
+        None => format!("{kind} #{index}"),
     }
 }
 

@@ -84,7 +84,7 @@ pub fn run(agent: Agent, config_path: &Path, stdin: &str, context: &Context) -> 
             Outcome {
                 output: evaluation
                     .decided_by()
-                    .map(|rule| agent.render(rule.decision, &rule.reason())),
+                    .map(|decided| agent.render(decided.decision, &decided.reason)),
                 warnings: vec![],
                 audit,
             }

@@ -2,7 +2,7 @@
 
 use crate::agent::Agent;
 use crate::config::{AuditConfig, AuditLevel};
-use crate::policy::{Decision, Evaluation, Rule};
+use crate::policy::{Decision, Evaluation, Match, RuleKind};
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, FixedOffset, SecondsFormat};
 use serde::Serialize;
@@ -29,6 +29,7 @@ pub struct AuditRecord {
 
 #[derive(Debug, PartialEq, Serialize)]
 struct DecidedBy {
+    kind: RuleKind,
     index: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
@@ -36,27 +37,30 @@ struct DecidedBy {
 
 #[derive(Debug, PartialEq, Serialize)]
 struct MatchedRule {
+    kind: RuleKind,
     index: usize,
     decision: Decision,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
 }
 
-impl From<&Rule> for DecidedBy {
-    fn from(rule: &Rule) -> Self {
+impl From<&Match> for DecidedBy {
+    fn from(m: &Match) -> Self {
         DecidedBy {
-            index: rule.index,
-            description: rule.description.clone(),
+            kind: m.kind,
+            index: m.index,
+            description: m.description.clone(),
         }
     }
 }
 
-impl From<&Rule> for MatchedRule {
-    fn from(rule: &Rule) -> Self {
+impl From<&Match> for MatchedRule {
+    fn from(m: &Match) -> Self {
         MatchedRule {
-            index: rule.index,
-            decision: rule.decision,
-            description: rule.description.clone(),
+            kind: m.kind,
+            index: m.index,
+            decision: m.decision,
+            description: m.description.clone(),
         }
     }
 }
@@ -86,19 +90,15 @@ impl AuditRecord {
         config: &AuditConfig,
         invocation: &Invocation<'_>,
         payload: &Value,
-        evaluation: &Evaluation<'_>,
+        evaluation: &Evaluation,
     ) -> Option<Self> {
         let decided_by = evaluation.decided_by();
         config
             .records(!evaluation.matches.is_empty())
             .then(|| AuditRecord {
-                decision: decided_by.map_or("passthrough", |rule| rule.decision.as_str()),
+                decision: decided_by.map_or("passthrough", |decided| decided.decision.as_str()),
                 decided_by: decided_by.map(DecidedBy::from),
-                matches: evaluation
-                    .matches
-                    .iter()
-                    .map(|rule| MatchedRule::from(*rule))
-                    .collect(),
+                matches: evaluation.matches.iter().map(MatchedRule::from).collect(),
                 payload: truncate_json_strings(payload, config.max_value_len),
                 ..AuditRecord::base(invocation)
             })

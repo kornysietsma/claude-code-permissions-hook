@@ -1,4 +1,4 @@
-use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule, rule_label};
+use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule, RuleKind, rule_label};
 use anyhow::{Context, Result, anyhow, bail};
 use globset::GlobBuilder;
 use regex::Regex;
@@ -135,7 +135,11 @@ fn compile_rule(
     table: toml::Table,
     patterns: &BTreeMap<&str, Regex>,
 ) -> Result<Rule> {
-    let label = rule_label(index, table.get("description").and_then(|d| d.as_str()));
+    let label = rule_label(
+        RuleKind::Rule,
+        index,
+        table.get("description").and_then(|d| d.as_str()),
+    );
 
     let raw: RawRule = table.try_into().with_context(|| label.clone())?;
     let tool = raw
@@ -154,6 +158,7 @@ fn compile_rule(
         .collect::<Result<_>>()?;
 
     Ok(Rule {
+        kind: RuleKind::Rule,
         index,
         decision: raw.decision,
         tool,
