@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use tool_gate_hook::Agent;
 use tool_gate_hook::config::{AuditConfig, AuditLevel, Config};
 use tool_gate_hook::policy::{Decision, FieldMatcher};
+use tool_gate_hook::validate::validate;
 
 const VALID: &str = r#"
 [audit]
@@ -203,4 +204,69 @@ fn paths_under_is_only_for_command_rules() {
     let error = error_text("[[rule]]\ndecision = \"ask\"\npaths_under = [\"{cwd}\"]");
 
     assert!(error.contains("paths_under"), "{error}");
+}
+
+#[test]
+fn validate_warns_about_command_rule_fields_that_are_not_segment_fields() {
+    let config = Config::from_toml(
+        r#"
+[patterns]
+cargo = '^cargo\b'
+
+[[command_rule]]
+decision = "allow"
+description = "copied from a [[rule]]"
+match."tool_input.command" = { regex = '^cargo\b' }
+
+[[command_rule]]
+decision = "allow"
+match.text = { regex = '@cargo' }
+match."env.RUST_LOG" = { exists = true }
+"#,
+        Agent::Claude,
+    )
+    .unwrap();
+
+    assert_eq!(
+        validate(Agent::Claude, &config).warnings,
+        vec![
+            "command rule #1 (copied from a [[rule]]): field \"tool_input.command\" does not \
+             start with a segment field (text, name, args, env, redirects, wrappers, source, dirs)"
+                .to_owned()
+        ]
+    );
+}
+
+#[test]
+fn validate_summary_lists_construct_rules_and_safe_env() {
+    let config = Config::from_toml(
+        r#"
+[patterns]
+rust = '^RUST_LOG$'
+
+[shell]
+safe_env = ['@rust', '^CI$']
+
+[[construct_rule]]
+decision = "deny"
+construct = "pipe"
+
+[[construct_rule]]
+decision = "ask"
+construct = "redirect_write"
+outside = ["{cwd}"]
+"#,
+        Agent::Claude,
+    )
+    .unwrap();
+
+    assert_eq!(
+        validate(Agent::Claude, &config).summary,
+        "0 rules (allow 0, ask 0, deny 0)\n\
+         0 command rules (allow 0, ask 0, deny 0)\n\
+         2 construct rules (deny on pipe; ask on redirect_write outside {cwd})\n\
+         safe_env: '^RUST_LOG$', '^CI$'\n\
+         patterns: rust\n\
+         audit: off (no [audit] section)"
+    );
 }

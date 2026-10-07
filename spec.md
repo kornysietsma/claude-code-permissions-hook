@@ -246,9 +246,10 @@ Sent to the agent with every decision (Copilot and Claude show it for `deny` and
 - A command rule also gets ` — in "<text>"` for the segment it matched, e.g. `tool-gate-hook: ask by command rule #6 (git push) — in "git push"`.
 - A construct rule also names the first construct it matched: ` — "<target>"` for a redirect, else ` — in "<segment source>"` when it has a segment, e.g. `tool-gate-hook: ask by construct rule #2 (writes outside the project) — "/Users/me/build.log"`.
 - A floor: `tool-gate-hook: ask — <description> (<detail>), in "<segment source>"`, leaving out the parts that don't apply. For example: `tool-gate-hook: ask — a value only the shell can work out (glob in docs/*.md), in "ls docs/*.md"`.
-- Each floor has a fixed human-readable description: `parse_error` "the command could not be parsed", `unsupported` "shell syntax that tool-gate-hook can't check", `expansion` "a value only the shell can work out", `dynamic_command` "a command name only the shell can work out", `env_assign` "a variable not listed in [shell] safe_env", `shell_reentry` "a command that runs shell code or changes how later commands run", `exec_tool` "a command that can run other commands or delete files", `cd` "a directory change tool-gate-hook can't follow". (To be reviewed with real examples before release.)
+- Each floor has a fixed human-readable description: `parse_error` "the command could not be parsed", `unsupported` "shell syntax that tool-gate-hook can't check", `expansion` "a value only the shell can work out", `dynamic_command` "a command name only the shell can work out", `env_assign` "a variable not listed in [shell] safe_env", `shell_reentry` "a command that runs shell code or changes how later commands run", `exec_tool` "a command that can run other commands or delete files", `cd` "a directory change tool-gate-hook can't follow".
 - The detail says what triggered it: the kind of piece and the raw word, with the place when it isn't an arg or the command word. For example `variable in $HOME`, `glob in redirect *.log`, `variable in here-string $x`, `command substitution in heredoc body`, `process substitution in <(sort a)`, `for loop`, `assignment FOO`.
-- brush-parser normalises `source`, e.g. `2>&1` is rendered as `2>& 1`.
+- brush-parser normalises `source`, e.g. `2>&1` is rendered as `2>& 1` and `<(sort a)` as `<(( sort a ))`; it is left as is.
+- Quoted text in a reason (a segment's `source` or `text`, a floor detail, a redirect target) is cut to its first line and 100 characters, with ` …` when anything was left out, so a heredoc body never floods the reason. The audit record keeps the full text. A floor leaves out `, in "<segment source>"` when the source is the same as the detail (`(sh)`, not `(sh), in "sh"`).
 
 ### Rule indexes
 
@@ -314,7 +315,7 @@ tool-gate-hook explain --agent claude --config path.toml --payload record-or-pay
 
 ## `validate` changes
 
-- The summary includes counts per rule kind, construct rules by construct, and `safe_env`.
+- The summary has a line per rule kind (counts per decision for rules and command rules; each construct rule as `ask on background`, with its `outside` list), then `safe_env`, patterns and audit.
 - New errors: allow `[[rule]]` that can match the shell tool; command rule with no conditions; allow construct rule; unknown construct; `outside` on a construct other than `redirect_write`.
 - The existing unknown-field-path warning applies to `[[rule]]` only. For command rules, warn on match paths whose first component isn't a segment field.
 

@@ -76,6 +76,18 @@ pub struct Segment {
 }
 
 impl Segment {
+    /// The top-level keys of a segment as JSON, which command rule field paths start with
+    pub const FIELDS: [&str; 8] = [
+        "text",
+        "name",
+        "args",
+        "env",
+        "redirects",
+        "wrappers",
+        "source",
+        "dirs",
+    ];
+
     /// Neutral segments need no command rule, and rules never see them
     pub fn is_neutral(&self) -> bool {
         match self.kind {
@@ -897,6 +909,19 @@ mod tests {
 
     fn texts(analysis: &Analysis) -> Vec<&str> {
         analysis.segments.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn fields_lists_every_key_of_a_segment() {
+        let analysis = analyse_here("cd sub && ls");
+        let value = serde_json::to_value(&analysis.segments[1]).unwrap();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, Segment::FIELDS);
     }
 
     fn floors(analysis: &Analysis) -> Vec<(&'static str, Option<usize>, &str)> {

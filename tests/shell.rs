@@ -833,3 +833,26 @@ fn construct_rule_config_errors() {
         assert!(error.contains(expected), "{rule}: {error}");
     }
 }
+
+#[test]
+fn reasons_quote_only_the_first_line_and_skip_repeats() {
+    assert_eq!(
+        decision_allowing_everything("cat x | sh").1,
+        "tool-gate-hook: ask — a command that runs shell code or changes how later commands run (sh)"
+    );
+    assert_eq!(
+        decision_allowing_everything("cat <<EOF > x\nline $HOME\nEOF").1,
+        "tool-gate-hook: ask — a value only the shell can work out (variable in heredoc body), \
+         in \"cat <<EOF …\""
+    );
+    let long = format!("ls {}", "a".repeat(200));
+    assert_eq!(
+        reason(&format!("{long} && git push")),
+        "tool-gate-hook: ask by command rule #6 (git push) — in \"git push\""
+    );
+    let (_, reason) = decision_allowing_everything(&format!("{long} $HOME"));
+    assert!(
+        reason.ends_with(&format!("in \"{} …\"", &long[..100])),
+        "{reason}"
+    );
+}

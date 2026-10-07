@@ -293,3 +293,46 @@ fn harmless_builtins_are_allowed_but_not_ones_that_set_variables() {
         }
     }
 }
+
+#[test]
+fn validate_summarises_each_example() {
+    let summary = |name: &str, agent| {
+        let config = Config::load(&examples_dir().join(name), agent).unwrap();
+        validate(agent, &config).summary
+    };
+    let safe_env =
+        "safe_env: '^RUST_(LOG|BACKTRACE)$', '^NO_COLOR$', '^CI$', '^TERM$', '^LANG$', '^LC_'";
+    let constructs =
+        "2 construct rules (ask on background; ask on redirect_write outside {cwd}, /tmp)";
+    assert_eq!(
+        summary("claude.toml", Agent::Claude),
+        format!(
+            "2 rules (allow 1, ask 0, deny 1)\n\
+             7 command rules (allow 3, ask 2, deny 2)\n\
+             {constructs}\n\
+             {safe_env}\n\
+             patterns: none\n\
+             audit: /tmp/tool-gate-hook-claude.jsonl (level matched, max_value_len 1024)"
+        )
+    );
+    assert_eq!(
+        summary("copilot.toml", Agent::Copilot),
+        format!(
+            "4 rules (allow 2, ask 0, deny 2)\n\
+             7 command rules (allow 3, ask 2, deny 2)\n\
+             {constructs}\n\
+             {safe_env}\n\
+             patterns: none\n\
+             audit: /tmp/tool-gate-hook-copilot.jsonl (level matched, max_value_len 1024)"
+        )
+    );
+    assert_eq!(
+        summary("mermaid-claude.toml", Agent::Claude),
+        "2 rules (allow 2, ask 0, deny 0)\n\
+         4 command rules (allow 4, ask 0, deny 0)\n\
+         0 construct rules\n\
+         safe_env: none\n\
+         patterns: none\n\
+         audit: /tmp/tool-gate-hook-mermaid.jsonl (level all, max_value_len 1024)"
+    );
+}

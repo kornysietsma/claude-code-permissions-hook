@@ -180,7 +180,9 @@ impl Policy {
                     .command_rules
                     .iter()
                     .filter(|rule| rule.matches_segment(segment, &value, &call.cwd, context))
-                    .map(|rule| rule.to_match(Some(i + 1), &format!(" — in \"{}\"", segment.text)))
+                    .map(|rule| {
+                        rule.to_match(Some(i + 1), &format!(" — in \"{}\"", brief(&segment.text)))
+                    })
                     .collect();
                 let decision = segment_matches.iter().map(|m| m.decision).max();
                 matches.extend(segment_matches);
@@ -224,10 +226,12 @@ impl Policy {
 fn floor_match(construct: &Construct, analysis: &Analysis) -> Match {
     let mut reason = format!("tool-gate-hook: ask — {}", construct.kind.describe());
     if let Some(detail) = &construct.detail {
-        reason.push_str(&format!(" ({detail})"));
+        reason.push_str(&format!(" ({})", brief(detail)));
     }
-    if let Some(segment) = construct.segment.and_then(|i| analysis.segments.get(i)) {
-        reason.push_str(&format!(", in \"{}\"", segment.source));
+    if let Some(segment) = construct.segment.and_then(|i| analysis.segments.get(i))
+        && construct.detail.as_ref() != Some(&segment.source)
+    {
+        reason.push_str(&format!(", in \"{}\"", brief(&segment.source)));
     }
     Match {
         kind: RuleKind::Floor,
@@ -236,6 +240,19 @@ fn floor_match(construct: &Construct, analysis: &Analysis) -> Match {
         description: Some(construct.kind.name().to_owned()),
         reason,
         segment: construct.segment.map(|i| i + 1),
+    }
+}
+
+/// Longest text quoted in a reason; the audit record keeps the full text
+const BRIEF_LEN: usize = 100;
+
+/// The first line of `text`, cut to `BRIEF_LEN` characters, with `…` if anything was left out
+fn brief(text: &str) -> Cow<'_, str> {
+    let first_line = text.lines().next().unwrap_or_default();
+    match first_line.char_indices().nth(BRIEF_LEN) {
+        Some((end, _)) => Cow::Owned(format!("{} …", &first_line[..end])),
+        None if first_line.len() < text.len() => Cow::Owned(format!("{first_line} …")),
+        None => Cow::Borrowed(text),
     }
 }
 
@@ -359,8 +376,8 @@ impl ConstructRule {
             .unwrap_or_else(|| default_reason(self.decision, &self.label()));
         let segment = construct.segment.and_then(|i| analysis.segments.get(i));
         let context = match (&construct.target, segment) {
-            (Some(target), _) => format!(" — \"{target}\""),
-            (None, Some(segment)) => format!(" — in \"{}\"", segment.source),
+            (Some(target), _) => format!(" — \"{}\"", brief(target)),
+            (None, Some(segment)) => format!(" — in \"{}\"", brief(&segment.source)),
             (None, None) => String::new(),
         };
         Match {
@@ -443,5 +460,16 @@ mod tests {
         assert_eq!(lookup(&payload, "cwd"), Some(&json!("/tmp")));
         assert_eq!(lookup(&payload, "tool_input.missing"), None);
         assert_eq!(lookup(&payload, "cwd.deeper"), None);
+    }
+
+    #[test]
+    fn brief_keeps_the_first_line_up_to_the_limit() {
+        assert_eq!(brief("cargo test"), "cargo test");
+        assert_eq!(brief("cat <<EOF\nbody\nEOF\n > x"), "cat <<EOF …");
+        assert_eq!(brief(""), "");
+        let long = "é".repeat(BRIEF_LEN + 5);
+        assert_eq!(brief(&long), format!("{} …", "é".repeat(BRIEF_LEN)));
+        let exact = "x".repeat(BRIEF_LEN);
+        assert_eq!(brief(&exact), exact);
     }
 }

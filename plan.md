@@ -10,9 +10,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Status
 
-- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 8 (`git log` has the hash).
-- **Done:** steps 1 to 8.
-- **Next:** step 9, `validate` and reason polish.
+- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 9 (`git log` has the hash).
+- **Done:** steps 1 to 9.
+- **Next:** step 10, docs, README, AGENTS.md and skills.
 
 ### Working on this branch
 
@@ -45,7 +45,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Technical context
 
-### Code shape (as of step 8)
+### Code shape (as of step 9)
 
 | Module | Contents | Still to come |
 |--------|----------|---------------|
@@ -54,9 +54,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 | `src/shell/words.rs` | `analyse(raw, home, options) -> WordInfo { value: Result<String, NotStatic>, substitutions }`, `analyse_heredoc(raw, options)`; `NotStatic::{Expansion, Unsupported}(why)`; `$'…'` decoding; `quote()` for `text`. Unit tests. | |
 | `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`; `Agent::shell_payload(command, cwd)`, a minimal payload used by `explain` and tests. | |
 | `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[shell]` (`RawShell`, `safe_env` compiled with `compile_regexes`, so `@patterns` work); `[[command_rule]]` with `paths_under`; the errors for an allow `[[rule]]` that can match the shell tool, for a command rule with no `match` and no `paths_under`, and for an empty `paths_under`; `[[construct_rule]]` (`compile_construct_rule`: errors for allow, an unknown construct, a floor name, `outside` on another construct, an empty `outside`). | |
-| `src/policy.rs` | `Policy { rules, command_rules, construct_rules, shell_tool, shell: shell::Settings }`; `RuleKind` (`Rule`, `CommandRule`, `ConstructRule`, `Floor`); `ConstructRule { index, decision, construct, description, reason, outside }` (matches if any construct of its kind is present; with `outside`, only `redirect_write` targets not under those directories from every one of the construct's `dirs`; its matches have no `segment` and come after the command-rule matches); `default_reason`; `Rule` (reused for command rules, `tool: None`; `paths_under` empty for `[[rule]]`s); `Location { cwd, dirs }` and `is_under`; `Rule::matches_segment` (fields, then `paths_under`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }` (`None` for neutral segments, which rules never see); the combiner in `Policy::evaluate` skips neutral segments and needs at least one non-neutral one to allow; `floor_match`. | |
+| `src/policy.rs` | `Policy { rules, command_rules, construct_rules, shell_tool, shell: shell::Settings }`; `RuleKind` (`Rule`, `CommandRule`, `ConstructRule`, `Floor`); `ConstructRule { index, decision, construct, description, reason, outside }` (matches if any construct of its kind is present; with `outside`, only `redirect_write` targets not under those directories from every one of the construct's `dirs`; its matches have no `segment` and come after the command-rule matches); `default_reason`; `brief()` cuts quoted text in reasons to its first line and `BRIEF_LEN` (100) characters; `Rule` (reused for command rules, `tool: None`; `paths_under` empty for `[[rule]]`s); `Location { cwd, dirs }` and `is_under`; `Rule::matches_segment` (fields, then `paths_under`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }` (`None` for neutral segments, which rules never see); the combiner in `Policy::evaluate` skips neutral segments and needs at least one non-neutral one to allow; `floor_match`. | |
 | `src/auditing.rs` | `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated; a neutral segment's `decision` is `"neutral"`); the caller checks the level with `AuditConfig::records`. `AuditRecord::for_explanation(…, truncated)` adds `reason`. `is_truncated`, `truncate_json_strings`. | |
-| `src/validate.rs` | Summary lines for rules and command rules. | Construct rules, `safe_env`, segment-field warnings (9). |
+| `src/validate.rs` | The summary (a line per rule kind, `safe_env`, patterns, audit); warnings for `[[rule]]` paths that don't start with a payload key, and command rule paths that don't start with one of `Segment::FIELDS`. | |
 | `src/lib.rs`, `src/main.rs` | `run`, `validate`, and `explain` (`lib::explain(agent, config_path, input, context) -> Result<Explanation { record, warnings }>`; the input is a payload or an audit record; `--payload -` reads stdin). | |
 
 Tests:
@@ -99,7 +99,7 @@ Tests:
 
 ## Steps
 
-### Steps 1–8 ✅
+### Steps 1–9 ✅
 
 1. **brush-parser spike.** brush-parser 0.4.0 is in.
 2. **First end-to-end slice.** Segments; command rules on `text`/`name`; the `parse_error` and `unsupported` floors; an allow `[[rule]]` on the shell tool is a config error; the examples migrated; differential tests against zsh and bash.
@@ -109,16 +109,7 @@ Tests:
 6. **`shell_reentry` and `exec_tool` floors.** By the basename of the unwrapped name, so `env bash x` and `/bin/bash x` are caught; `find` only with an action that runs commands or deletes.
 7. **`cd` tracking and `paths_under`.** Segments carry every directory the shell might be in (a `cd` adds, never removes, since it can fail or be scoped to a subshell); in-cwd `cd`/`pushd` is neutral and anything else the `cd` floor; `paths_under` on command rules (URLs aren't path-like; `-o/etc/x`-style args fail the rule); `under` on segment fields checks every possible directory; the mermaid example uses `paths_under` and `parent_dir` is gone.
 8. **Construct rules.** `[[construct_rule]]` with its config errors; a rule matches if any construct of its kind is present, and `redirect_write` with `outside` checks each target from every directory the shell might be in when the redirect is opened (for a group's own redirect, the directories before the group); construct-rule matches come last and carry no segment; their reason names the first matching construct (` — "<target>"` for a redirect, else ` — in "<segment source>"`). The claude and copilot examples ask on `background` and on `redirect_write` outside `{cwd}` and `/tmp`, and allow harmless builtins (`printf -v` excluded via `text`, since `[` is re-quoted as `'['` in `text` the rule matches on `name`).
-
-### Step 9: `validate` and reason polish
-
-- [ ] The summary: counts per rule kind and decision (rules and command rules done in step 2), construct rules by construct, `safe_env`, patterns, audit.
-- [ ] Warnings: command rule match paths whose first component isn't a segment field. The existing payload-key warning stays for `[[rule]]`.
-- [ ] Review every floor's `describe()` text and the reason formats against real examples; keep them short. Consider whether `source` should undo brush's `2>& 1` rendering.
-
-**Automated:** validate summary tests (`assert_eq!` on the full text) for the example configs; the warning tests.
-
-**Manual:** run `validate` on each example and read the output.
+9. **`validate` and reason polish.** The summary gains construct rules and `safe_env`; command rule field paths that don't start with a segment field warn. Floor descriptions were reviewed against the local corpus and kept. Quoted text in reasons is cut to its first line and 100 characters (`brief()`), so heredoc bodies don't flood them, and a floor drops `, in "…"` when it repeats the detail. brush's `source` rendering (`2>& 1`, `<(( x ))`) is left as is (decided by the author).
 
 ### Step 10: docs, README, AGENTS.md and skills
 
@@ -164,7 +155,6 @@ Tests:
 - **Harmless builtins** (done in step 8): `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v` (e.g. `match.text = { regex = '^printf\b', not_regex = '^printf -v\b' }`, or a separate ask rule), and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided (by the author): handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
 - **Author's preference:** keep things simple rather than adding code for obscure edge cases; raise real security holes as questions (as with the `cd` scoping), but don't build for unlikely ones.
 - bash (not zsh) tilde-expands after `=` in assignment-like args (`make CC=~/x` passes `CC=/home/…/x`); the segment shows the literal `~`. Only the `--opt=value` part is path-like, and `--opt` isn't a valid name, so `paths_under` is unaffected; keep it that way.
-- **For step 9:** review the `env_assign` description ("a variable not listed in [shell] safe_env") with the other floor texts. Floor reasons repeat themselves when the segment is only the name, e.g. `… (sh), in "sh"` for `git diff | sh`.
 
 **Example and test facts:**
 - In audit records, `[[rule]]` matches come before command-rule matches. `tests/audit.rs` `deny_wins_and_all_matches_are_recorded_rules_first` pins this. Construct-rule matches come last (`construct_rule_matches_come_last_without_a_segment`).
