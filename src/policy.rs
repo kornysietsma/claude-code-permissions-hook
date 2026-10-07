@@ -1,7 +1,7 @@
 use crate::Context;
 use crate::agent::{ShellTool, ToolCall};
 use crate::paths;
-use crate::shell::{self, Analysis, Construct, Segment};
+use crate::shell::{self, Analysis, Construct, ConstructKind, Segment};
 use globset::GlobMatcher;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,7 @@ pub enum Decision {
 pub struct Policy {
     pub rules: Vec<Rule>,
     pub command_rules: Vec<Rule>,
+    pub construct_rules: Vec<ConstructRule>,
     pub shell_tool: ShellTool,
     pub shell: shell::Settings,
 }
@@ -31,6 +32,7 @@ pub struct Policy {
 pub enum RuleKind {
     Rule,
     CommandRule,
+    ConstructRule,
     /// A built-in check that can't be configured away
     Floor,
 }
@@ -40,6 +42,7 @@ impl RuleKind {
         match self {
             RuleKind::Rule => "rule",
             RuleKind::CommandRule => "command_rule",
+            RuleKind::ConstructRule => "construct_rule",
             RuleKind::Floor => "floor",
         }
     }
@@ -57,6 +60,20 @@ pub struct Rule {
     pub fields: Vec<FieldCondition>,
     /// Command rules only: every path-like value in the segment must be under one of these
     pub paths_under: Vec<String>,
+}
+
+/// A `[[construct_rule]]`: a decision when a shell construct is present
+#[derive(Debug)]
+pub struct ConstructRule {
+    /// 1-based position among the config file's construct rules
+    pub index: usize,
+    /// Never `Allow`: constructs can only raise a decision
+    pub decision: Decision,
+    pub construct: ConstructKind,
+    pub description: Option<String>,
+    pub reason: Option<String>,
+    /// `redirect_write` only: writes to files under these directories don't count
+    pub outside: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -170,6 +187,13 @@ impl Policy {
                 decision
             })
             .collect::<Vec<_>>();
+        matches.extend(self.construct_rules.iter().filter_map(|rule| {
+            analysis
+                .constructs
+                .iter()
+                .find(|construct| rule.matches(construct, &call.cwd, context))
+                .map(|construct| rule.to_match(construct, &analysis))
+        }));
 
         let mut checked = analysis
             .segments
@@ -286,13 +310,9 @@ impl Rule {
     }
 
     pub fn reason(&self) -> String {
-        self.reason.clone().unwrap_or_else(|| {
-            format!(
-                "tool-gate-hook: {} by {}",
-                self.decision.as_str(),
-                self.label()
-            )
-        })
+        self.reason
+            .clone()
+            .unwrap_or_else(|| default_reason(self.decision, &self.label()))
     }
 
     /// `context` is appended to the reason, to say which shell segment matched
@@ -306,6 +326,56 @@ impl Rule {
             segment,
         }
     }
+}
+
+impl ConstructRule {
+    fn matches(&self, construct: &Construct, cwd: &Path, context: &Context) -> bool {
+        let outside = || {
+            let location = Location {
+                cwd,
+                dirs: &construct.dirs,
+            };
+            construct
+                .target
+                .as_ref()
+                .is_some_and(|target| !location.is_under(target, &self.outside, context))
+        };
+        construct.kind == self.construct && (self.outside.is_empty() || outside())
+    }
+
+    pub fn label(&self) -> String {
+        rule_label(
+            RuleKind::ConstructRule,
+            self.index,
+            self.description.as_deref(),
+        )
+    }
+
+    /// `construct` is the first one the rule matched, which the reason names
+    fn to_match(&self, construct: &Construct, analysis: &Analysis) -> Match {
+        let reason = self
+            .reason
+            .clone()
+            .unwrap_or_else(|| default_reason(self.decision, &self.label()));
+        let segment = construct.segment.and_then(|i| analysis.segments.get(i));
+        let context = match (&construct.target, segment) {
+            (Some(target), _) => format!(" — \"{target}\""),
+            (None, Some(segment)) => format!(" — in \"{}\"", segment.source),
+            (None, None) => String::new(),
+        };
+        Match {
+            kind: RuleKind::ConstructRule,
+            index: Some(self.index),
+            decision: self.decision,
+            description: self.description.clone(),
+            reason: format!("{reason}{context}"),
+            segment: None,
+        }
+    }
+}
+
+fn default_reason(decision: Decision, label: &str) -> String {
+    format!("tool-gate-hook: {} by {label}", decision.as_str())
 }
 
 impl FieldCondition {

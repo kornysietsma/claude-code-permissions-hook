@@ -1,6 +1,8 @@
 use crate::agent::Agent;
-use crate::policy::{Decision, FieldCondition, FieldMatcher, Policy, Rule, RuleKind, rule_label};
-use crate::shell;
+use crate::policy::{
+    ConstructRule, Decision, FieldCondition, FieldMatcher, Policy, Rule, RuleKind, rule_label,
+};
+use crate::shell::{self, ConstructKind};
 use anyhow::{Context, Result, anyhow, bail};
 use globset::GlobBuilder;
 use regex::Regex;
@@ -62,6 +64,8 @@ struct RawConfig {
     rules: Vec<toml::Table>,
     #[serde(default, rename = "command_rule")]
     command_rules: Vec<toml::Table>,
+    #[serde(default, rename = "construct_rule")]
+    construct_rules: Vec<toml::Table>,
 }
 
 #[derive(Default, Deserialize)]
@@ -91,6 +95,16 @@ struct RawCommandRule {
     #[serde(default, rename = "match")]
     fields: BTreeMap<String, RawFieldMatch>,
     paths_under: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConstructRule {
+    decision: Decision,
+    construct: String,
+    description: Option<String>,
+    reason: Option<String>,
+    outside: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -158,6 +172,12 @@ impl Config {
             .enumerate()
             .map(|(i, table)| compile_command_rule(i + 1, table, &patterns))
             .collect::<Result<_>>()?;
+        let construct_rules = raw
+            .construct_rules
+            .into_iter()
+            .enumerate()
+            .map(|(i, table)| compile_construct_rule(i + 1, table))
+            .collect::<Result<_>>()?;
         let safe_env = match raw.shell.safe_env {
             safe_env if safe_env.is_empty() => vec![],
             safe_env => {
@@ -170,6 +190,7 @@ impl Config {
             policy: Policy {
                 rules,
                 command_rules,
+                construct_rules,
                 shell_tool,
                 shell: shell::Settings { safe_env },
             },
@@ -241,6 +262,48 @@ fn compile_command_rule(
         reason: raw.reason,
         fields: compile_fields(raw.fields, patterns, &label)?,
         paths_under: raw.paths_under.unwrap_or_default(),
+    })
+}
+
+fn compile_construct_rule(index: usize, table: toml::Table) -> Result<ConstructRule> {
+    let label = label_for(RuleKind::ConstructRule, index, &table);
+    let raw: RawConstructRule = table.try_into().with_context(|| label.clone())?;
+    if raw.decision == Decision::Allow {
+        bail!("{label}: a construct rule can only ask or deny, not allow");
+    }
+    let construct = match ConstructKind::from_name(&raw.construct) {
+        Some(kind) if kind.is_floor() => bail!(
+            "{label}: {} is a built-in check that always asks; it can't be configured",
+            raw.construct
+        ),
+        Some(kind) => kind,
+        None => {
+            let known: Vec<&str> = ConstructKind::ALL
+                .iter()
+                .filter(|kind| !kind.is_floor())
+                .map(|kind| kind.name())
+                .collect();
+            bail!(
+                "{label}: unknown construct \"{}\" (expected one of {})",
+                raw.construct,
+                known.join(", ")
+            );
+        }
+    };
+    let outside = match raw.outside {
+        Some(_) if construct != ConstructKind::RedirectWrite => {
+            bail!("{label}: outside is only for redirect_write")
+        }
+        Some(outside) if outside.is_empty() => bail!("{label}: outside: empty list"),
+        outside => outside.unwrap_or_default(),
+    };
+    Ok(ConstructRule {
+        index,
+        decision: raw.decision,
+        construct,
+        description: raw.description,
+        reason: raw.reason,
+        outside,
     })
 }
 

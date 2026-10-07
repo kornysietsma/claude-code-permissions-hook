@@ -574,14 +574,25 @@ impl Project {
     }
 
     fn decision(&self, command: &str) -> Option<String> {
-        let config = self.root.path().join("claude.toml");
-        fs::write(&config, PATHS_CONFIG).unwrap();
+        self.decision_with(PATHS_CONFIG, command)
+            .map(|(decision, _)| decision)
+    }
+
+    /// The decision and reason for `command`, run in the project with `config`
+    fn decision_with(&self, config: &str, command: &str) -> Option<(String, String)> {
+        let config_path = self.root.path().join("claude.toml");
+        fs::write(&config_path, config).unwrap();
         let cwd = self.root.path().join("project");
         let payload = Agent::Claude.shell_payload(command, &cwd).to_string();
         let context = Context::new(self.root.path().join("home"));
-        run(Agent::Claude, &config, &payload, &context)
+        run(Agent::Claude, &config_path, &payload, &context)
             .output
-            .map(|output| output_field(Agent::Claude, &output, "permissionDecision"))
+            .map(|output| {
+                (
+                    output_field(Agent::Claude, &output, "permissionDecision"),
+                    output_field(Agent::Claude, &output, "permissionDecisionReason"),
+                )
+            })
     }
 }
 
@@ -663,5 +674,162 @@ fn other_directory_changes_ask() {
             Some("ask"),
             "{command}"
         );
+    }
+}
+
+const CONSTRUCTS_CONFIG: &str = r#"
+[[command_rule]]
+decision = "allow"
+description = "cargo test"
+match.text = { regex = '^cargo test\b' }
+
+[[command_rule]]
+decision = "deny"
+description = "recursive delete"
+match.text = { regex = '^rm -rf\b' }
+
+[[construct_rule]]
+decision = "ask"
+construct = "background"
+description = "backgrounded commands"
+
+[[construct_rule]]
+decision = "ask"
+construct = "redirect_write"
+description = "writes outside the project"
+outside = ["{cwd}", "/tmp"]
+"#;
+
+fn construct_decision(project: &Project, command: &str) -> Option<String> {
+    project
+        .decision_with(CONSTRUCTS_CONFIG, command)
+        .map(|(decision, _)| decision)
+}
+
+#[test]
+fn writes_outside_the_listed_directories_ask() {
+    let project = Project::new();
+    for (command, expected) in [
+        ("cargo test > out.txt", "allow"),
+        ("cargo test > sub/out.txt", "allow"),
+        ("cargo test > /tmp/out.txt", "allow"),
+        ("cargo test 2>&1 > /dev/null", "allow"),
+        ("cargo test 2>&1 >&- 3>&2-", "allow"),
+        ("cargo test < /etc/x", "allow"),
+        ("cargo test > ~/out.txt", "ask"),
+        ("cargo test > /etc/x", "ask"),
+        ("cargo test >> /etc/x", "ask"),
+        ("cargo test 2> /etc/x", "ask"),
+        ("cargo test &> /etc/x", "ask"),
+        ("cargo test >& /etc/x", "ask"),
+        ("cargo test >| /etc/x", "ask"),
+        ("cargo test <> /etc/x", "ask"),
+        ("cargo test > link/x", "ask"),
+        ("cargo test > ../x", "ask"),
+    ] {
+        assert_eq!(
+            construct_decision(&project, command).as_deref(),
+            Some(expected),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn redirect_targets_are_checked_from_every_possible_directory() {
+    let project = Project::new();
+    for (command, expected) in [
+        ("cd sub && cargo test > x", "allow"),
+        ("cd sub && cargo test > ../../x", "ask"),
+        // From the project root, where the shell may still be, ../x is outside
+        ("cd sub && cargo test > ../x", "ask"),
+        // A group's own redirect is opened before the group runs
+        ("(cd sub && cargo test) > x", "allow"),
+        ("(cd sub && cargo test) > ../x", "ask"),
+        ("cd sub && (cargo test) > ../x", "ask"),
+    ] {
+        assert_eq!(
+            construct_decision(&project, command).as_deref(),
+            Some(expected),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn construct_rules_ask_even_when_every_segment_is_allowed() {
+    let project = Project::new();
+    assert_eq!(
+        project.decision_with(CONSTRUCTS_CONFIG, "cargo test &"),
+        Some((
+            "ask".to_owned(),
+            "tool-gate-hook: ask by construct rule #1 (backgrounded commands) — in \"cargo test\""
+                .to_owned()
+        ))
+    );
+    // The first target outside the directories is named
+    assert_eq!(
+        project
+            .decision_with(CONSTRUCTS_CONFIG, "cargo test > x 2> /etc/x > /etc/y")
+            .map(|(_, reason)| reason)
+            .as_deref(),
+        Some("tool-gate-hook: ask by construct rule #2 (writes outside the project) — \"/etc/x\"")
+    );
+    // Commands no rule matched ask too, rather than passing through
+    assert_eq!(
+        construct_decision(&project, "make &").as_deref(),
+        Some("ask")
+    );
+    assert_eq!(
+        construct_decision(&project, "cargo test && rm -rf x &").as_deref(),
+        Some("deny")
+    );
+}
+
+#[test]
+fn a_construct_rule_can_deny() {
+    let project = Project::new();
+    let config = format!(
+        "{CONSTRUCTS_CONFIG}\n[[construct_rule]]\ndecision = \"deny\"\nconstruct = \"pipe\"\nreason = \"No pipes\""
+    );
+    assert_eq!(
+        project.decision_with(&config, "cargo test | cargo test &"),
+        Some(("deny".to_owned(), "No pipes — in \"cargo test\"".to_owned()))
+    );
+}
+
+#[test]
+fn construct_rule_config_errors() {
+    for (rule, expected) in [
+        (
+            "decision = \"allow\"\nconstruct = \"pipe\"",
+            "construct rule #1: a construct rule can only ask or deny, not allow",
+        ),
+        (
+            "decision = \"ask\"\nconstruct = \"pipes\"",
+            "construct rule #1: unknown construct \"pipes\" (expected one of substitution, \
+             heredoc, pipe, background, subshell, redirect_read, redirect_write)",
+        ),
+        (
+            "decision = \"ask\"\nconstruct = \"expansion\"",
+            "construct rule #1: expansion is a built-in check that always asks; \
+             it can't be configured",
+        ),
+        (
+            "decision = \"ask\"\nconstruct = \"pipe\"\noutside = [\"{cwd}\"]",
+            "construct rule #1: outside is only for redirect_write",
+        ),
+        (
+            "decision = \"ask\"\nconstruct = \"redirect_write\"\noutside = []",
+            "construct rule #1: outside: empty list",
+        ),
+        ("decision = \"ask\"", "missing field `construct`"),
+        (
+            "decision = \"ask\"\nconstruct = \"pipe\"\nmatch.text = { regex = 'x' }",
+            "unknown field `match`",
+        ),
+    ] {
+        let error = config_error(Agent::Claude, &format!("[[construct_rule]]\n{rule}"));
+        assert!(error.contains(expected), "{rule}: {error}");
     }
 }

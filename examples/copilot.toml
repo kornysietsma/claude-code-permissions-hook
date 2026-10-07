@@ -35,6 +35,15 @@ decision = "allow"
 description = "read-only git"
 match.text = { regex = '^git (status|diff|log|show)\b' }
 
+# Builtins that only print or test. `printf -v NAME` sets a variable, so it isn't included,
+# and neither are read, mapfile and getopts. Writes through redirects are checked by the
+# construct rule below.
+[[command_rule]]
+decision = "allow"
+description = "harmless builtins"
+match.name = { regex = '^(true|false|:|echo|printf|test|\[)$' }
+match.text = { not_regex = '^printf -v' }
+
 [[rule]]
 decision = "allow"
 tool = "view"
@@ -56,6 +65,19 @@ match.text = { regex = '^git push\b' }
 decision = "ask"
 description = "sudo"
 match.name = { equals = "sudo" }
+
+# Shell structure that command rules don't see: a backgrounded command keeps running after
+# the call, and a redirect can write to any file
+[[construct_rule]]
+decision = "ask"
+construct = "background"
+description = "backgrounded commands"
+
+[[construct_rule]]
+decision = "ask"
+construct = "redirect_write"
+description = "writes outside the project"
+outside = ["{cwd}", "/tmp"]
 
 [[command_rule]]
 decision = "deny"

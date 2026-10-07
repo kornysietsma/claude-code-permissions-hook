@@ -246,3 +246,50 @@ fn safe_env_assignments_are_allowed_and_others_ask() {
         assert_eq!(decision("PATH=./evil; cargo test").as_deref(), Some("ask"));
     }
 }
+
+fn example_decision(agent: Agent, command: &str) -> Option<String> {
+    example_shell_decision(agent, command)
+        .map(|d| d["permissionDecision"].as_str().unwrap().to_owned())
+}
+
+#[test]
+fn writes_outside_the_project_and_background_commands_ask() {
+    for agent in [Agent::Claude, Agent::Copilot] {
+        for (command, expected) in [
+            ("cargo test > target/out.txt", "allow"),
+            ("cargo test > /tmp/out.txt", "allow"),
+            ("cargo test 2>&1 > /dev/null", "allow"),
+            ("cargo test > /etc/x", "ask"),
+            ("echo x > ~/.zshrc", "ask"),
+            ("echo x >> ../other/file", "ask"),
+            ("cargo test &", "ask"),
+        ] {
+            assert_eq!(
+                example_decision(agent, command).as_deref(),
+                Some(expected),
+                "{agent:?}: {command}"
+            );
+        }
+    }
+}
+
+#[test]
+fn harmless_builtins_are_allowed_but_not_ones_that_set_variables() {
+    for agent in [Agent::Claude, Agent::Copilot] {
+        for (command, expected) in [
+            ("echo hi && true", Some("allow")),
+            ("cargo test || false", Some("allow")),
+            ("printf '%s\\n' x; : ; test -f x && [ -d y ]", Some("allow")),
+            ("printf -v PATH x; cargo test", None),
+            ("printf -vPATH x", None),
+            ("read PATH", None),
+            ("mapfile x", None),
+        ] {
+            assert_eq!(
+                example_decision(agent, command).as_deref(),
+                expected,
+                "{agent:?}: {command}"
+            );
+        }
+    }
+}

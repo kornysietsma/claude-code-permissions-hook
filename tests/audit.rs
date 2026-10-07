@@ -289,6 +289,37 @@ tool = "Read"
 }
 
 #[test]
+fn construct_rule_matches_come_last_without_a_segment() {
+    let rules = r#"
+[[construct_rule]]
+decision = "ask"
+construct = "background"
+description = "backgrounded commands"
+
+[[command_rule]]
+decision = "allow"
+description = "cargo"
+match.name = { equals = "cargo" }
+"#;
+    let record = run_claude("matched", rules, &bash_with_command("cargo test &"))
+        .record()
+        .unwrap();
+
+    assert_eq!(record["decision"], "ask");
+    assert_eq!(
+        record["decided_by"],
+        json!({ "kind": "construct_rule", "index": 1, "description": "backgrounded commands" })
+    );
+    assert_eq!(
+        record["matches"],
+        json!([
+            { "kind": "command_rule", "index": 1, "decision": "allow", "description": "cargo", "segment": 1 },
+            { "kind": "construct_rule", "index": 1, "decision": "ask", "description": "backgrounded commands" }
+        ])
+    );
+}
+
+#[test]
 fn ask_decision_is_recorded() {
     let rules = "[[rule]]\ndecision = \"ask\"\ntool = \"Bash\"";
     let record = run_claude("matched", rules, &fixture("bash"))

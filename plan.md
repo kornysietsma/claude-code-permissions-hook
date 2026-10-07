@@ -10,9 +10,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Status
 
-- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 7 (`git log` has the hash).
-- **Done:** steps 1 to 7.
-- **Next:** step 8, construct rules.
+- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 8 (`git log` has the hash).
+- **Done:** steps 1 to 8.
+- **Next:** step 9, `validate` and reason polish.
 
 ### Working on this branch
 
@@ -45,16 +45,16 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Technical context
 
-### Code shape (as of step 7)
+### Code shape (as of step 8)
 
 | Module | Contents | Still to come |
 |--------|----------|---------------|
-| `src/shell/mod.rs` | `analyse(command, home, cwd, settings) -> Analysis`; `Settings { safe_env }` (the `[shell]` config); the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment` (with `kind: SegmentKind`, `#[serde(skip)]`, and `dirs: Vec<PathBuf>`, serialised last and only when there is more than the cwd; `is_neutral()`; `path_like() -> Option<Vec<&str>>`), `SegmentKind::{Command, AssignmentOnly, Cd}`, `Redirect`, `Construct { kind, segment, detail, target }`, `ConstructKind` (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`, `EnvAssign`, `ShellReentry`, `ExecTool`, `Cd`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording; `value(raw, shown, …)` classifies `raw` but reports `shown` (an assignment's value is reported as the whole `NAME=value`). `simple()` puts prefix assignments in `env` (`assignment()`), checks names with `check_env_name()` (prefix, `env NAME=…`, and the `DECLARATIONS` builtins' args via `assigned_name()`), and calls `unwrap()`, then `command_floors()` and `cd()` (`cd_targets()` adds to the walker's `dirs`, capped at `MAX_DIRS` = 16; also `SHELL_REENTRY` names and `xargs`, and `find` with `FIND_ACTIONS`, by the basename of the unwrapped name). `file_redirect()` records `redirect_read`/`redirect_write`. | Recording `dirs` on a group's own `redirect_write` constructs (8). |
+| `src/shell/mod.rs` | `analyse(command, home, cwd, settings) -> Analysis`; `Settings { safe_env }` (the `[shell]` config); the allow-listed `Walker` (with `depth`, capped at `MAX_DEPTH` = 16); `Segment` (with `kind: SegmentKind`, `#[serde(skip)]`, and `dirs: Vec<PathBuf>`, serialised last and only when there is more than the cwd; `is_neutral()`; `path_like() -> Option<Vec<&str>>`), `SegmentKind::{Command, AssignmentOnly, Cd}`, `Redirect`, `Construct { kind, segment, detail, target, dirs }` (`dirs` only on `redirect_read`/`redirect_write`: the walker's possible directories when the redirect is seen, which also covers a group's own redirects, which have no segment), `ConstructKind` (`ALL`, `from_name()`; (floors `ParseError`, `Unsupported`, `Expansion`, `DynamicCommand`, `EnvAssign`, `ShellReentry`, `ExecTool`, `Cd`; recorded `Substitution`, `Heredoc`, `Pipe`, `Background`, `Subshell`, `RedirectRead`, `RedirectWrite`; `name()`, `is_floor()`, `describe()`); `Analysis::unsupported(detail)`. Words and redirects queue `Pending` substitutions, which `walk_pending` walks after the segment is pushed. `enclosing()` records pipe, background and subshell against the first segment inside. A word's `Role` (command, arg, redirect, here-string) picks the floor and the detail wording; `value(raw, shown, …)` classifies `raw` but reports `shown` (an assignment's value is reported as the whole `NAME=value`). `simple()` puts prefix assignments in `env` (`assignment()`), checks names with `check_env_name()` (prefix, `env NAME=…`, and the `DECLARATIONS` builtins' args via `assigned_name()`), and calls `unwrap()`, then `command_floors()` and `cd()` (`cd_targets()` adds to the walker's `dirs`, capped at `MAX_DIRS` = 16; also `SHELL_REENTRY` names and `xargs`, and `find` with `FIND_ACTIONS`, by the basename of the unwrapped name). `file_redirect()` records `redirect_read`/`redirect_write` with `dirs`. | |
 | `src/shell/wrappers.rs` | `unwrap(name, args) -> Result<Unwrapped { wrappers, env, name, args }, String>`: peels `env`, `timeout`, `nice`, `nohup` and `time` (bare names only), with each one's option grammar; `Err` is the `unsupported` detail. Unit tests. | |
 | `src/shell/words.rs` | `analyse(raw, home, options) -> WordInfo { value: Result<String, NotStatic>, substitutions }`, `analyse_heredoc(raw, options)`; `NotStatic::{Expansion, Unsupported}(why)`; `$'…'` decoding; `quote()` for `text`. Unit tests. | |
 | `src/agent.rs` | `Agent::shell_tool() -> ShellTool { name, command_path }`; `Agent::shell_payload(command, cwd)`, a minimal payload used by `explain` and tests. | |
-| `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[shell]` (`RawShell`, `safe_env` compiled with `compile_regexes`, so `@patterns` work); `[[command_rule]]` with `paths_under`; the errors for an allow `[[rule]]` that can match the shell tool, for a command rule with no `match` and no `paths_under`, and for an empty `paths_under`. | `[[construct_rule]]` (8). |
-| `src/policy.rs` | `Policy { rules, command_rules, shell_tool, shell: shell::Settings }`; `RuleKind` (`Rule`, `CommandRule`, `Floor`); `Rule` (reused for command rules, `tool: None`; `paths_under` empty for `[[rule]]`s); `Location { cwd, dirs }` and `is_under`; `Rule::matches_segment` (fields, then `paths_under`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }` (`None` for neutral segments, which rules never see); the combiner in `Policy::evaluate` skips neutral segments and needs at least one non-neutral one to allow; `floor_match`. | `ConstructRule` kind and evaluation (8). |
+| `src/config.rs` | `Config::load(path, agent)` / `from_toml(contents, agent)`; `[shell]` (`RawShell`, `safe_env` compiled with `compile_regexes`, so `@patterns` work); `[[command_rule]]` with `paths_under`; the errors for an allow `[[rule]]` that can match the shell tool, for a command rule with no `match` and no `paths_under`, and for an empty `paths_under`; `[[construct_rule]]` (`compile_construct_rule`: errors for allow, an unknown construct, a floor name, `outside` on another construct, an empty `outside`). | |
+| `src/policy.rs` | `Policy { rules, command_rules, construct_rules, shell_tool, shell: shell::Settings }`; `RuleKind` (`Rule`, `CommandRule`, `ConstructRule`, `Floor`); `ConstructRule { index, decision, construct, description, reason, outside }` (matches if any construct of its kind is present; with `outside`, only `redirect_write` targets not under those directories from every one of the construct's `dirs`; its matches have no `segment` and come after the command-rule matches); `default_reason`; `Rule` (reused for command rules, `tool: None`; `paths_under` empty for `[[rule]]`s); `Location { cwd, dirs }` and `is_under`; `Rule::matches_segment` (fields, then `paths_under`); `Match { kind, index: Option, decision, description, reason, segment: Option (1-based) }`; `Evaluation { matches, decided_by, shell: Option<ShellEvaluation { analysis, segment_decisions: Vec<Option<Decision>> }> }` (`None` for neutral segments, which rules never see); the combiner in `Policy::evaluate` skips neutral segments and needs at least one non-neutral one to allow; `floor_match`. | |
 | `src/auditing.rs` | `AuditRecord::for_evaluation(invocation, payload, evaluation, max_value_len)` builds the record, including the `shell` object (`ShellRecord`, serialised to a `Value` and truncated; a neutral segment's `decision` is `"neutral"`); the caller checks the level with `AuditConfig::records`. `AuditRecord::for_explanation(…, truncated)` adds `reason`. `is_truncated`, `truncate_json_strings`. | |
 | `src/validate.rs` | Summary lines for rules and command rules. | Construct rules, `safe_env`, segment-field warnings (9). |
 | `src/lib.rs`, `src/main.rs` | `run`, `validate`, and `explain` (`lib::explain(agent, config_path, input, context) -> Result<Explanation { record, warnings }>`; the input is a payload or an audit record; `--payload -` reads stdin). | |
@@ -63,7 +63,7 @@ Tests:
 
 | File | Contents |
 |------|----------|
-| `tests/shell.rs` | Acceptance tests through `run` for both agents, with one shared `CONFIG` (it has `[patterns]` and `[shell] safe_env` for `RUST_LOG`, `RUST_BACKTRACE` and `NO_COLOR`; rule numbers are referenced in reason assertions, so append new rules at the end). Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. Also `ALLOW_EVERYTHING` with `decision_allowing_everything(command)` (a match-all allow plus an `rm -rf` deny, for "floor beats a broad allow" and "deny beats the floor" tests), and `PATHS_CONFIG` with `Project` (a temp dir with `project/sub/sub2`, `project/link` → outside, and `home/scratch`; `Project::decision(command)` runs with that cwd and home) for `paths_under` and `cd`. Put helpers here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
+| `tests/shell.rs` | Acceptance tests through `run` for both agents, with one shared `CONFIG` (it has `[patterns]` and `[shell] safe_env` for `RUST_LOG`, `RUST_BACKTRACE` and `NO_COLOR`; rule numbers are referenced in reason assertions, so append new rules at the end). Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. `CONSTRUCTS_CONFIG` (a background ask, a `redirect_write` ask outside `{cwd}` and `/tmp`) is used with `Project::decision_with(config, command)`. Also `ALLOW_EVERYTHING` with `decision_allowing_everything(command)` (a match-all allow plus an `rm -rf` deny, for "floor beats a broad allow" and "deny beats the floor" tests), and `PATHS_CONFIG` with `Project` (a temp dir with `project/sub/sub2`, `project/link` → outside, and `home/scratch`; `Project::decision(command)` runs with that cwd and home) for `paths_under` and `cd`. Put helpers here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
 | `tests/shell_differential.rs` | `AGREED` (static commands zsh, bash and we split identically) and `DISAGREED` (must hit a floor). |
 | `tests/shell_corpus.rs` | `curated_corpus_is_analysed_as_expected` checks `tests/fixtures/shell/corpus.jsonl`: sanitised real commands with expected segment names and floors. To add cases, generate the expectations with `explain`, an empty config and `jq`, then review them. Plus the ignored local-corpus summary. |
 | `tests/audit.rs` | Audit records, including the full `shell` shape (`shell_record_shows_each_segment_and_construct`), neutral segments, `dirs` after a `cd`, and truncation inside `shell`. |
@@ -99,7 +99,7 @@ Tests:
 
 ## Steps
 
-### Steps 1–7 ✅
+### Steps 1–8 ✅
 
 1. **brush-parser spike.** brush-parser 0.4.0 is in.
 2. **First end-to-end slice.** Segments; command rules on `text`/`name`; the `parse_error` and `unsupported` floors; an allow `[[rule]]` on the shell tool is a config error; the examples migrated; differential tests against zsh and bash.
@@ -108,24 +108,7 @@ Tests:
 5. **Wrappers, `[shell] safe_env`, `env_assign`.** Prefix and `env` assignments go to `env`; the `env_assign` floor (also for declaration builtins' args); assignment-only segments are neutral; array assignments are `unsupported`; `env`/`timeout`/`nice`/`nohup`/`time` unwrapped (bare names only); `safe_env` in the claude and copilot examples.
 6. **`shell_reentry` and `exec_tool` floors.** By the basename of the unwrapped name, so `env bash x` and `/bin/bash x` are caught; `find` only with an action that runs commands or deletes.
 7. **`cd` tracking and `paths_under`.** Segments carry every directory the shell might be in (a `cd` adds, never removes, since it can fail or be scoped to a subshell); in-cwd `cd`/`pushd` is neutral and anything else the `cd` floor; `paths_under` on command rules (URLs aren't path-like; `-o/etc/x`-style args fail the rule); `under` on segment fields checks every possible directory; the mermaid example uses `paths_under` and `parent_dir` is gone.
-
-### Step 8: construct rules
-
-- [ ] Config: `[[construct_rule]]` with `decision`, `construct`, `description`, `reason`, and `outside` (only for `redirect_write`). Errors: allow, an unknown construct, a floor name, `outside` on another construct. Add `RuleKind::ConstructRule`.
-- [ ] Evaluation: a construct rule matches if any recorded construct of its kind is present. For `redirect_write` with `outside`, only targets not under those directories count, resolved from every one of the segment's possible directories with `Location::is_under`. A group's own redirects (`( … ) > out`) have no segment, so record the walker's `dirs` at that point on the construct (they are applied before the group runs). Matches go after the command-rule matches.
-- [ ] Examples: ask on `background`; ask on `redirect_write` outside `{cwd}` and `/tmp`. Add the harmless-builtins allow (`true`, `false`, `:`, `echo`, `printf`, `test`, `[`), held back from step 2 until writes are checked.
-
-**Automated:**
-- `cargo test > /tmp/out.txt` → allow; `cargo test > ~/out.txt` → ask; `cargo test > out.txt` → allow;
-- `echo x > ~/.zshrc` → ask with the example config;
-- `cd sub && cargo test > ../../x` → ask; `cd sub && cargo test > ../x` → ask too (from the cwd it is outside);
-- a group's own redirect: `(cd sub && cargo test) > ../x` → ask, checked from the directories before the group;
-- `cargo test > /etc/x` → ask with the example config (it was allowed until now);
-- `cargo test &` → ask;
-- the harmless builtins: `echo hi && true` → allow; `printf -v PATH x` and `read PATH` → not allowed;
-- each config error.
-
-**Manual:** `explain` a command that triggers both a command rule allow and a construct rule ask; check which is the deciding item and that the reason makes sense.
+8. **Construct rules.** `[[construct_rule]]` with its config errors; a rule matches if any construct of its kind is present, and `redirect_write` with `outside` checks each target from every directory the shell might be in when the redirect is opened (for a group's own redirect, the directories before the group); construct-rule matches come last and carry no segment; their reason names the first matching construct (` — "<target>"` for a redirect, else ` — in "<segment source>"`). The claude and copilot examples ask on `background` and on `redirect_write` outside `{cwd}` and `/tmp`, and allow harmless builtins (`printf -v` excluded via `text`, since `[` is re-quoted as `'['` in `text` the rule matches on `name`).
 
 ### Step 9: `validate` and reason polish
 
@@ -178,14 +161,13 @@ Tests:
 - `cd_targets()` treats a `cd` argument as non-static if any floor was already recorded for that segment.
 - When unwrapping fails (unknown option), the segment keeps the wrapper as its name, with no `wrappers`.
 - A non-static word after a wrapper (`timeout 60 $CMD`) becomes the name, but hits `expansion` (not `dynamic_command`), since it was classified as an arg.
-- **For step 8's harmless builtins:** `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v` (e.g. `match.text = { regex = '^printf\b', not_regex = '^printf -v\b' }`, or a separate ask rule), and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided (by the author): handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
+- **Harmless builtins** (done in step 8): `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v` (e.g. `match.text = { regex = '^printf\b', not_regex = '^printf -v\b' }`, or a separate ask rule), and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided (by the author): handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
 - **Author's preference:** keep things simple rather than adding code for obscure edge cases; raise real security holes as questions (as with the `cd` scoping), but don't build for unlikely ones.
 - bash (not zsh) tilde-expands after `=` in assignment-like args (`make CC=~/x` passes `CC=/home/…/x`); the segment shows the literal `~`. Only the `--opt=value` part is path-like, and `--opt` isn't a valid name, so `paths_under` is unaffected; keep it that way.
 - **For step 9:** review the `env_assign` description ("a variable not listed in [shell] safe_env") with the other floor texts. Floor reasons repeat themselves when the segment is only the name, e.g. `… (sh), in "sh"` for `git diff | sh`.
 
 **Example and test facts:**
-- `cargo test > /etc/x` is still allowed by the examples' cargo rule, as it was by the old regex rule; step 8's `redirect_write` rule fixes it.
-- In audit records, `[[rule]]` matches come before command-rule matches. `tests/audit.rs` `deny_wins_and_all_matches_are_recorded_rules_first` pins this.
+- In audit records, `[[rule]]` matches come before command-rule matches. `tests/audit.rs` `deny_wins_and_all_matches_are_recorded_rules_first` pins this. Construct-rule matches come last (`construct_rule_matches_come_last_without_a_segment`).
 - The mermaid example has no `echo $$-$RANDOM` rule any more; `$` is a floor, and its test asserts it asks.
 
 **For the skills and docs:**

@@ -147,6 +147,28 @@ pub enum ConstructKind {
 }
 
 impl ConstructKind {
+    pub const ALL: [ConstructKind; 15] = [
+        ConstructKind::ParseError,
+        ConstructKind::Unsupported,
+        ConstructKind::Expansion,
+        ConstructKind::DynamicCommand,
+        ConstructKind::EnvAssign,
+        ConstructKind::ShellReentry,
+        ConstructKind::ExecTool,
+        ConstructKind::Cd,
+        ConstructKind::Substitution,
+        ConstructKind::Heredoc,
+        ConstructKind::Pipe,
+        ConstructKind::Background,
+        ConstructKind::Subshell,
+        ConstructKind::RedirectRead,
+        ConstructKind::RedirectWrite,
+    ];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ConstructKind::ParseError => "parse_error",
@@ -219,6 +241,8 @@ pub struct Construct {
     pub detail: Option<String>,
     /// The file, for redirects
     pub target: Option<String>,
+    /// For redirects: every directory the shell might be in when the target is opened
+    pub dirs: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -238,6 +262,7 @@ impl Analysis {
                 segment: None,
                 detail: Some(detail.to_owned()),
                 target: None,
+                dirs: vec![],
             }],
         }
     }
@@ -375,6 +400,7 @@ impl Walker<'_> {
             segment: (self.analysis.segments.len() > first).then_some(first),
             detail: None,
             target: None,
+            dirs: vec![],
         };
         self.analysis.constructs.insert(position, construct);
     }
@@ -662,17 +688,12 @@ impl Walker<'_> {
             self.depth += 1;
             match item {
                 Pending::Substitution(command) => {
-                    self.record(
-                        ConstructKind::Substitution,
-                        segment,
-                        Some(command.clone()),
-                        None,
-                    );
+                    self.record(ConstructKind::Substitution, segment, Some(command.clone()));
                     self.program(&command, segment);
                 }
                 Pending::Process(subshell) => {
                     let detail = subshell.list.to_string();
-                    self.record(ConstructKind::Substitution, segment, Some(detail), None);
+                    self.record(ConstructKind::Substitution, segment, Some(detail));
                     self.list(&subshell.list, &[]);
                 }
             }
@@ -771,12 +792,7 @@ impl Walker<'_> {
                 let delimiter = words::analyse(raw, self.home, self.options)
                     .value
                     .unwrap_or_else(|_| raw.clone());
-                self.record(
-                    ConstructKind::Heredoc,
-                    segment,
-                    Some(delimiter.clone()),
-                    None,
-                );
+                self.record(ConstructKind::Heredoc, segment, Some(delimiter.clone()));
                 if doc.requires_expansion {
                     let info = words::analyse_heredoc(&doc.doc.value, self.options);
                     pending.extend(info.substitutions.into_iter().map(Pending::Substitution));
@@ -795,7 +811,7 @@ impl Walker<'_> {
                 })
             }
             IoRedirect::HereString(fd, word) => {
-                self.record(ConstructKind::Heredoc, segment, None, None);
+                self.record(ConstructKind::Heredoc, segment, None);
                 Some(Redirect {
                     op: "<<<",
                     fd: *fd,
@@ -826,25 +842,27 @@ impl Walker<'_> {
             // `<&word` with a non-fd word is an error in bash
             IoFileRedirectKind::DuplicateInput => return,
         };
-        self.record(construct, segment, None, Some(target.to_owned()));
+        // A group's own redirects have no segment, so the directories are kept here
+        self.analysis.constructs.push(Construct {
+            kind: construct,
+            segment,
+            detail: None,
+            target: Some(target.to_owned()),
+            dirs: self.dirs.clone(),
+        });
     }
 
     fn floor(&mut self, kind: ConstructKind, segment: Option<usize>, detail: impl Into<String>) {
-        self.record(kind, segment, Some(detail.into()), None);
+        self.record(kind, segment, Some(detail.into()));
     }
 
-    fn record(
-        &mut self,
-        kind: ConstructKind,
-        segment: Option<usize>,
-        detail: Option<String>,
-        target: Option<String>,
-    ) {
+    fn record(&mut self, kind: ConstructKind, segment: Option<usize>, detail: Option<String>) {
         self.analysis.constructs.push(Construct {
             kind,
             segment,
             detail,
-            target,
+            target: None,
+            dirs: vec![],
         });
     }
 }
