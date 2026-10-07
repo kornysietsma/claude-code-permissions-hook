@@ -107,8 +107,8 @@ Unquoted text (where quoted parts count as plain characters) is also `expansion`
 `env`, `timeout`, `nice`, `nohup` and `time` are unwrapped: the segment is the wrapped command, with the wrapper recorded in `wrappers`. The wrapper's own options are parsed with hard-coded knowledge:
 
 - `env`: leading `NAME=value` words go to `env`. Any option (`-i`, `-u`, `-S`, `--`, …) → `unsupported`.
-- `timeout`: optional flags `-s SIG`/`--signal=SIG`, `-k DUR`/`--kill-after=DUR`, `--preserve-status`, `--foreground`, `-v`; then one duration word.
-- `nice`: optional `-n N` / `-nN` / `--adjustment=N`.
+- `timeout`: optional flags `-s SIG`/`--signal=SIG`, `-k DUR`/`--kill-after=DUR`, `--preserve-status`, `--foreground`, `-v`; then one duration word (a number with an optional `s`, `m`, `h` or `d` suffix; anything else is `unsupported`).
+- `nice`: optional `-n N` / `-nN` / `--adjustment=N`, where `N` is an integer.
 - `nohup`, `time`: no options (`time -p` allowed).
 
 Unrecognised wrapper options → `unsupported` (ask floor). A wrapper with no command following → treated as a plain segment named after the wrapper. Only bare names are wrappers: `/usr/bin/env` or `./env` stays the command name, since a path could be any program. When a wrapper's options aren't understood, the segment keeps the wrapper as its name.
@@ -225,16 +225,16 @@ For a shell-tool call:
 
 1. Evaluate `[[rule]]` entries against the raw payload (deny/ask only, by construction).
 2. Parse the command. On failure: `parse_error`. Walk the tree with the allow-listed walker; collect segments (in textual order, except that a command comes before the commands substituted into it), constructs and floors. Track the possible directories for `cd`.
-3. For each non-`cd` segment, evaluate every command rule; the segment's decision is the highest of its matching rules (deny > ask > allow), or **none** if nothing matched.
+3. For each non-neutral segment (not assignment-only or in-project `cd`), evaluate every command rule; the segment's decision is the highest of its matching rules (deny > ask > allow), or **none** if nothing matched.
 4. Evaluate every construct rule against the collected constructs.
 5. Combine:
    - **deny** if any `[[rule]]`, command rule or construct rule denies;
    - else **ask** if any of them asks, or any floor fired;
-   - else **allow** if there is at least one segment and every non-`cd` segment's decision is allow;
+   - else **allow** if there is at least one non-neutral segment and every non-neutral segment's decision is allow;
    - else **passthrough** (some segment matched no command rule, or there were no segments).
 6. The deciding item: the first deny or ask in this order: `[[rule]]` matches (file order), floors (textual order), segments (textual order, first matching rule), construct rules (file order). For allow, the first segment's first allowing rule.
 
-A command that is only `cd` into the project (no other segments) is a passthrough.
+A command of only neutral segments (in-project `cd`, assignments) is a passthrough, unless a floor such as `env_assign` asks.
 
 Non-shell tools evaluate exactly as today.
 
@@ -291,7 +291,7 @@ Top-level `matches` are in evaluation order: `[[rule]]` matches (file order), th
 }
 ```
 
-- `segment` references are 1-based indexes into `segments`. `cd` segments appear with `"decision": "neutral"`.
+- `segment` references are 1-based indexes into `segments`. Neutral segments (assignment-only and in-project `cd`) appear with `"decision": "neutral"`.
 - Floors appear in `constructs` with `"floor": true` and a `detail` string where useful (e.g. which variable).
 - Constructs carry `construct`, `segment` (when there is one), `detail`, `target` and `floor`, leaving out the ones that don't apply. `pipe`, `background` and `subshell` point at the first segment inside them. `redirect_read` and `redirect_write` carry the `target`; a group's own redirects (`( … ) > out`) have no segment. `heredoc` has the unquoted delimiter as `detail` (none for here-strings), and `substitution` has the inner command.
 - A segment's `matches` are its command-rule matches, without `segment`.
@@ -326,7 +326,7 @@ tool-gate-hook explain --agent claude --config path.toml --payload record-or-pay
 
 ## Code changes (sketch)
 
-- `src/shell.rs` (new): parse → segments, constructs, floors; wrappers; `cd` tracking; path-like detection; segment JSON.
+- `src/shell/` (new): `mod.rs` (parse → segments, constructs, floors; `cd` tracking; path-like detection; segment JSON), `words.rs` (static words), `wrappers.rs` (unwrapping).
 - `src/agent.rs`: shell tool name and command field per agent.
 - `src/config.rs`: `[shell]`, `[[command_rule]]`, `[[construct_rule]]`; new errors.
 - `src/policy.rs`: evaluate command rules by running the existing field matchers against each segment's JSON value; `paths_under`; construct rules; combiner; rule kinds in `Decision` references.
@@ -342,7 +342,7 @@ Keep `run()` free of I/O beyond reading the config; `explain` reuses it.
   - remove `shell_chain` and `parent_dir`;
   - shell allows become command rules on `text`; file-touching ones use `paths_under`;
   - `legacy_python` becomes a deny command rule on `name` (`'(^|/)(python[0-9.]*|pip[0-9]*|pipenv|virtualenv|pyenv)$'`);
-  - an allow command rule for harmless builtins (`true`, `false`, `:`, `echo`, `printf`, `test`, `[`);
+  - an allow command rule for harmless builtins (`true`, `false`, `:`, `echo`, `printf` without `-v`, `test`, `[`). `printf -v`, `read`, `mapfile`/`readarray` and `getopts` set variables, so they stay out of it; there is no floor for them;
   - an ask command rule for `sudo`;
   - construct rules: ask on `background`, ask on `redirect_write` outside `{cwd}` and `/tmp`;
   - a `[shell] safe_env` list.

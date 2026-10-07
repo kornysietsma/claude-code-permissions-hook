@@ -28,7 +28,19 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
   - build it with `scripts/shell-corpus.sh ~/.local/share/tool-gate-hook/claude.jsonl`, which writes `tests/fixtures/shell/corpus.local.jsonl` (one JSON string per line);
   - summarise it with `cargo test --test shell_corpus -- --ignored --nocapture`, which lists each floor's details per command;
   - after step 7, 120 of 162 commands hit no floor (a `cd` floor only adds to commands that already had one). Most floors are `$VAR` from `S=…` assignments (20 `env_assign`), and globs. The 8 `shell_reentry` floors are all `bash script.sh` or `bash -n`.
-- **Corpus expectations** are regenerated with `explain`, an empty config and `--payload` (build each payload with `jq`, as commands can contain newlines), then reviewed with `diff`.
+- **Corpus expectations** are regenerated with `explain`, an empty config and `--payload` (build each payload with `jq`, as commands can contain newlines), then reviewed with `diff`. After `cargo build`, save this as `regen.sh` in the scratchpad (`$S`) next to an empty `empty.toml`, run `zsh -f $S/regen.sh $S > $S/corpus.new.jsonl`, and `diff` it against `tests/fixtures/shell/corpus.jsonl`:
+
+  ```zsh
+  S=$1
+  while IFS= read -r line; do
+    print -r -- "$line" | jq -c '{hook_event_name:"PreToolUse",cwd:"/tmp",tool_name:"Bash",tool_input:{command:.command}}' > $S/payload.json
+    cmd=$(print -r -- "$line" | jq -c '.command')
+    ./target/debug/tool-gate-hook explain --agent claude --config $S/empty.toml --payload $S/payload.json \
+      | jq -c --argjson cmd "$cmd" '{command:$cmd, names:[.shell.segments[].name], floors:([.shell.constructs[] | select(.floor) | .construct] | unique)}'
+  done < tests/fixtures/shell/corpus.jsonl
+  ```
+
+  The test analyses with cwd `/tmp` and home `/home/me`; `explain` uses the real home, so a command that `cd`s under the home could differ (none do yet).
 - **`explain`** is the quickest manual check: `cargo run -q -- explain --agent claude --config examples/claude.toml --cwd /tmp 'COMMAND' | jq …`. An empty config file shows the bare analysis.
 
 ## Technical context
@@ -51,10 +63,11 @@ Tests:
 
 | File | Contents |
 |------|----------|
-| `tests/shell.rs` | Acceptance tests through `run` for both agents, with one shared `CONFIG` (it has `[patterns]` and `[shell] safe_env` for `RUST_LOG`, `RUST_BACKTRACE` and `NO_COLOR`; rule numbers are referenced in reason assertions, so append new rules at the end). Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. Put helpers here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
+| `tests/shell.rs` | Acceptance tests through `run` for both agents, with one shared `CONFIG` (it has `[patterns]` and `[shell] safe_env` for `RUST_LOG`, `RUST_BACKTRACE` and `NO_COLOR`; rule numbers are referenced in reason assertions, so append new rules at the end). Its `shell_payload(agent, command)` helper wraps `Agent::shell_payload` with cwd `/tmp`. Also `ALLOW_EVERYTHING` with `decision_allowing_everything(command)` (a match-all allow plus an `rm -rf` deny, for "floor beats a broad allow" and "deny beats the floor" tests), and `PATHS_CONFIG` with `Project` (a temp dir with `project/sub/sub2`, `project/link` → outside, and `home/scratch`; `Project::decision(command)` runs with that cwd and home) for `paths_under` and `cd`. Put helpers here rather than in `tests/common/mod.rs`, where an unused function is a dead-code error in other test binaries. |
 | `tests/shell_differential.rs` | `AGREED` (static commands zsh, bash and we split identically) and `DISAGREED` (must hit a floor). |
 | `tests/shell_corpus.rs` | `curated_corpus_is_analysed_as_expected` checks `tests/fixtures/shell/corpus.jsonl`: sanitised real commands with expected segment names and floors. To add cases, generate the expectations with `explain`, an empty config and `jq`, then review them. Plus the ignored local-corpus summary. |
-| `tests/audit.rs` | Audit records, including the full `shell` shape (`shell_record_shows_each_segment_and_construct`) and truncation inside `shell`. |
+| `tests/audit.rs` | Audit records, including the full `shell` shape (`shell_record_shows_each_segment_and_construct`), neutral segments, `dirs` after a `cd`, and truncation inside `shell`. |
+| `tests/config.rs` | Config parsing and errors, including `[shell]` and `paths_under`. |
 | `tests/explain.rs` | `lib::explain`: both input forms, both agents, reasons, truncated records, errors. `tests/smoke.rs` spawns the `explain` CLI. |
 | `tests/examples.rs` | The example configs, including the legacy-python cases (denied inside `$( )`, backticks, `<( )` and unquoted heredocs; not denied in quoted text). |
 
@@ -64,7 +77,8 @@ Tests:
 - **Allow-listed walker with exhaustive matches** on brush's enums (no `_ =>` arms), so a brush upgrade that adds syntax fails to compile instead of being silently allowed. brush-parser is pinned to `=0.4.0`.
 - **Segment order**: textual, except that a command comes before the commands substituted into it (substitutions are queued as `Pending` and walked after the segment is pushed, so segment indexes stay stable).
 - **Segments are matched as JSON**: `serde_json::to_value(&segment)` goes through the existing `FieldCondition` code. `FieldCondition::matches(value, location, context)` takes a `Location { cwd, dirs }`: `{cwd}` in configured directories is always the payload cwd, and a relative path must pass from every one of `dirs` (a segment's possible directories, or just the cwd for `[[rule]]`s). `Location::is_under` is shared by `under` and `paths_under`.
-- **Combiner** (`Policy::evaluate`): deny or ask if any match has it (the first most restrictive match decides); else allow if there is at least one segment and every segment's decision is allow (the first allow match decides); else passthrough. When steps 5 and 7 add neutral segments (assignment-only, `cd`), they must be skipped in the "every segment" check, and a command with only neutral segments passes through.
+- **Combiner** (`Policy::evaluate`): deny or ask if any match has it (the first most restrictive match decides); else allow if there is at least one non-neutral segment and every non-neutral segment's decision is allow (the first allow match decides); else passthrough. Neutral segments (assignment-only, in-project `cd`) are never shown to command rules.
+- **Possible directories**: the walker's `dirs` starts as the cwd, and each neutral `cd` adds its target resolved from every directory already in it; nothing is ever removed. This one rule covers failed `cd`s, `||`, subshells, substitutions and pipelines. Construct rules (step 8) must check `redirect_write` targets the same way.
 - **Rule indexes are per kind**, because TOML deserialises each array of tables separately and loses their relative order.
 - **Floor details** are short and specific (`for loop`, `variable in $HOME`, `assignment FOO`), and they appear in reasons.
 - **serde_json has `preserve_order`**, so records and `explain` output keep struct order.
@@ -104,8 +118,11 @@ Tests:
 **Automated:**
 - `cargo test > /tmp/out.txt` → allow; `cargo test > ~/out.txt` → ask; `cargo test > out.txt` → allow;
 - `echo x > ~/.zshrc` → ask with the example config;
-- `cd sub && cargo test > ../../x` → ask;
+- `cd sub && cargo test > ../../x` → ask; `cd sub && cargo test > ../x` → ask too (from the cwd it is outside);
+- a group's own redirect: `(cd sub && cargo test) > ../x` → ask, checked from the directories before the group;
+- `cargo test > /etc/x` → ask with the example config (it was allowed until now);
 - `cargo test &` → ask;
+- the harmless builtins: `echo hi && true` → allow; `printf -v PATH x` and `read PATH` → not allowed;
 - each config error.
 
 **Manual:** `explain` a command that triggers both a command rule allow and a construct rule ask; check which is the deciding item and that the reason makes sense.
@@ -155,12 +172,14 @@ Tests:
 
 ## Notes for later steps
 
-**From step 5 (assignments and wrappers):**
+**Shell analysis facts:**
 - An assignment-only segment has empty `text` and `name`; a `cd` segment keeps them.
-- Wrappers are unwrapped only when the name is bare (`env`, not `/usr/bin/env` or `./env`, which could be anything). An absolute-path wrapper stays the command name, so it passes through unless a rule names it. Step 6's `shell_reentry` check runs on the unwrapped name, so `env bash -c …` and `timeout 5 sh x` are caught.
+- Wrappers are unwrapped only when the name is bare (`env`, not `/usr/bin/env` or `./env`, which could be anything). An absolute-path wrapper stays the command name, so it passes through unless a rule names it. `shell_reentry`, `exec_tool` and `cd` checks run on the unwrapped name, so `env bash -c …` is caught, and `env cd x` is a `cd` floor (an external `cd` changes nothing).
+- `cd_targets()` treats a `cd` argument as non-static if any floor was already recorded for that segment.
 - When unwrapping fails (unknown option), the segment keeps the wrapper as its name, with no `wrappers`.
 - A non-static word after a wrapper (`timeout 60 $CMD`) becomes the name, but hits `expansion` (not `dynamic_command`), since it was classified as an arg.
-- **For step 8's harmless builtins:** `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v`, and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided: handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
+- **For step 8's harmless builtins:** `printf -v NAME …` and `read NAME` also set variables (e.g. `printf -v PATH ./evil; cargo test`). The `printf` allow must exclude `-v` (e.g. `match.text = { regex = '^printf\b', not_regex = '^printf -v\b' }`, or a separate ask rule), and `read`, `mapfile`/`readarray` and `getopts` must not be in it. Decided (by the author): handle this only by keeping them out of the allow rule. Don't add code to treat them as assignments; it's not worth it for such obscure cases.
+- **Author's preference:** keep things simple rather than adding code for obscure edge cases; raise real security holes as questions (as with the `cd` scoping), but don't build for unlikely ones.
 - bash (not zsh) tilde-expands after `=` in assignment-like args (`make CC=~/x` passes `CC=/home/…/x`); the segment shows the literal `~`. Only the `--opt=value` part is path-like, and `--opt` isn't a valid name, so `paths_under` is unaffected; keep it that way.
 - **For step 9:** review the `env_assign` description ("a variable not listed in [shell] safe_env") with the other floor texts. Floor reasons repeat themselves when the segment is only the name, e.g. `… (sh), in "sh"` for `git diff | sh`.
 
