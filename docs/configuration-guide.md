@@ -2,6 +2,43 @@
 
 The full reference for a `tool-gate-hook` config file. For a quick start see the [README](../README.md); for ready-to-copy configs see [`examples/`](../examples/).
 
+**Contents**
+
+- [Overview](#overview)
+- [Writing regexes in TOML](#writing-regexes-in-toml)
+- [`[audit]`](#audit)
+- [`[patterns]`](#patterns)
+- [`[[rule]]`](#rule)
+  - [Field paths](#field-paths)
+- [Matchers](#matchers)
+  - [Pattern references and `@`](#pattern-references-and-)
+  - [`under`](#under)
+- [Shell commands](#shell-commands)
+  - [Segments](#segments)
+  - [What always asks: floors](#what-always-asks-floors)
+  - [`[[command_rule]]`](#command_rule)
+  - [`[[construct_rule]]`](#construct_rule)
+  - [`[shell]`](#shell)
+  - [Wrappers](#wrappers)
+  - [`cd`](#cd)
+  - [zsh](#zsh)
+  - [Known gaps](#known-gaps)
+- [How decisions are made](#how-decisions-are-made)
+  - [Reasons](#reasons)
+- [`explain`](#explain)
+- [Errors and failure behaviour](#errors-and-failure-behaviour)
+- [Audit log](#audit-log)
+- [Worked examples](#worked-examples)
+  - [How one shell command is judged](#how-one-shell-command-is-judged)
+  - [Claude: allow a workflow, ask on risky structure](#claude-allow-a-workflow-ask-on-risky-structure)
+  - [Claude: limit writes to a directory, and deny secrets](#claude-limit-writes-to-a-directory-and-deny-secrets)
+  - [Copilot: the same idea](#copilot-the-same-idea)
+  - [Only ask in subagents](#only-ask-in-subagents)
+  - [A whole workflow](#a-whole-workflow)
+- [Registering the hook](#registering-the-hook)
+
+## Overview
+
 A config is a TOML file with these parts, all optional:
 
 | Part | What it does |
@@ -156,7 +193,7 @@ Calls to the shell tool (`Bash` for Claude, `bash` for Copilot) are not matched 
 - the shell structure (redirects, `&`, pipes, …) is checked against the [`[[construct_rule]]`s](#construct_rule);
 - anything that can't be checked statically hits a built-in [**floor**](#what-always-asks-floors), which asks.
 
-A shell call is **allowed only when every segment is allowed** by a command rule and nothing asks or denies. So `cargo build 2>&1 && cargo test` is allowed when cargo is, `cargo test && curl evil.example` is not (unless `curl` is allowed too), and quoted text such as a heredoc or a commit message is data, never a command.
+A shell call is **allowed only when every segment is allowed** by a command rule and nothing asks or denies. So `cargo build 2>&1 && cargo test` is allowed when cargo is, `cargo test && curl evil.example` is not (unless `curl` is allowed too), and quoted text such as a heredoc or a commit message is data, never a command. For a diagram of one command going through these steps, see [How one shell command is judged](#how-one-shell-command-is-judged).
 
 Claude Code runs commands in your login shell (zsh on macOS) and Copilot in bash. The parser uses bash syntax; where zsh would read a command differently, the command hits a floor (see [zsh](#zsh)).
 
@@ -464,6 +501,81 @@ That's the record for `cargo build 2>&1 && ./target/debug/demo > /etc/demo.log` 
 - `ts` is when the hook started, with the local offset.
 
 ## Worked examples
+
+### How one shell command is judged
+
+This is how [`examples/claude.toml`](../examples/claude.toml) judges `cargo build 2>&1 | tail -5 && git log --oneline > ~/notes.txt`, run in a project directory:
+
+```mermaid
+flowchart LR
+    classDef cmd fill:#f8fafc,stroke:#334155,color:#0f172a
+    classDef seg fill:#eff6ff,stroke:#1e40af,color:#1e3a8a
+    classDef con fill:#faf5ff,stroke:#7e22ce,color:#581c87
+    classDef rule fill:#ffffff,stroke:#64748b,color:#0f172a
+    classDef norule fill:#f8fafc,stroke:#94a3b8,stroke-dasharray:4 3,color:#475569
+    classDef allow fill:#16a34a,stroke:#15803d,color:#fff
+    classDef ask fill:#eab308,stroke:#ca8a04,color:#000
+    classDef none fill:#e2e8f0,stroke:#94a3b8,color:#334155
+
+    cmd["<b>cargo build 2>&1 | tail -5<br/>&& git log --oneline > ~/notes.txt</b>"]:::cmd
+
+    subgraph parsed ["1 · Parse"]
+        direction TB
+        s1["segment ① <code>cargo build</code>"]:::seg
+        s2["segment ② <code>tail -5</code>"]:::seg
+        s3["segment ③ <code>git log --oneline</code>"]:::seg
+        c1["construct: pipe ①→②"]:::con
+        c2["construct: redirect_write<br/><code>/Users/me/notes.txt</code>"]:::con
+    end
+
+    subgraph rules ["2 · Match rules"]
+        direction TB
+        r1["command rule #35;1 cargo workflow<br/><code>^cargo (build|test|…)\b</code>"]:::rule
+        r0["no command rule matches"]:::norule
+        r2["command rule #35;2 read-only git<br/><code>^git (status|diff|log|show)\b</code>"]:::rule
+        k0["no construct rule for pipe"]:::norule
+        k2["construct rule #35;2<br/>writes outside the project<br/><code>outside {cwd}, /tmp</code>"]:::rule
+    end
+
+    subgraph results ["3 · Each result"]
+        direction TB
+        d1["allow"]:::allow
+        d2["no decision"]:::none
+        d3["allow"]:::allow
+        d4["nothing"]:::none
+        d5["ask"]:::ask
+    end
+
+    final{{"<b>ASK</b><br/>deny beats ask<br/>beats allow"}}:::ask
+
+    cmd --> s1 & s2 & s3 & c1 & c2
+    s1 --> r1 --> d1
+    s2 -.-> r0 -.-> d2
+    s3 --> r2 --> d3
+    c1 -.-> k0 -.-> d4
+    c2 --> k2 --> d5
+    d1 & d2 & d3 & d5 --> final
+
+    style parsed fill:#ffffff,stroke:#cbd5e1,color:#0f172a
+    style rules fill:#ffffff,stroke:#cbd5e1,color:#0f172a
+    style results fill:#ffffff,stroke:#cbd5e1,color:#0f172a
+```
+
+1. **Parse.** The command has three segments (simple commands) and two constructs: the pipe, and the write to `~/notes.txt`. `2>&1` is not a construct: it copies a file descriptor rather than opening a file. Nothing in it needs the shell to work out (no variables, globs or substitutions), so no floor fires.
+2. **Match rules.** Each segment is checked against every command rule: `cargo build` and `git log --oneline` are allowed, and no rule matches `tail -5`. Each construct is checked against every construct rule: the write is outside `{cwd}` and `/tmp`, so construct rule #2 asks; there is no rule for pipes, so the pipe is only recorded.
+3. **Combine.** deny beats ask beats allow, so the call **asks**, with the reason `tool-gate-hook: ask by construct rule #2 (writes outside the project) — "/Users/me/notes.txt"`.
+
+Change one thing at a time and the answer changes:
+
+- Write to `notes.txt` (inside the project) instead: nothing asks, but `tail -5` matched no rule, so the call is a **passthrough** and Claude asks as usual.
+- Also add a command rule allowing `^tail -[0-9]+$`: every segment is allowed and nothing asks, so the call is **allowed**.
+- Add `&& rm -rf target` with the example's deny rule for it: the call is **denied**, whatever else matched.
+
+To see this for yourself, `explain` the command; each step above appears in its output:
+
+```bash
+tool-gate-hook explain --agent claude --config examples/claude.toml 'cargo build 2>&1 | tail -5 && git log --oneline > ~/notes.txt'
+```
 
 ### Claude: allow a workflow, ask on risky structure
 

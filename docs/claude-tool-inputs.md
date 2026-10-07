@@ -4,6 +4,19 @@ What Claude Code sends to a `PreToolUse` hook on stdin, and so what `match."<pat
 
 > **The audit log is the authoritative source.** Set `level = "all"` and `max_value_len = 0` in `[audit]` to record exactly what your Claude Code version sends (see [tests/README.md](../tests/README.md) for turning a record into a fixture). This document is a convenience snapshot, last compiled on 2026-10-03 from the Claude Code hooks documentation and the sources below; the top-level fields and the `Bash`, `Read`, `Write`, `Edit`, `Agent` and `SubagentHandback` payloads were checked against captures from Claude Code 2.1.289 on 2026-10-04; the other tools are from the sources below and unchecked.
 
+**Contents**
+
+- [Top-level fields](#top-level-fields)
+- [Decision output](#decision-output)
+- [Source attribution](#source-attribution)
+- [File Operation Tools](#file-operation-tools): [Read](#read), [Write](#write), [Edit](#edit), [NotebookEdit](#notebookedit)
+- [Search Tools](#search-tools): [Glob](#glob), [Grep](#grep)
+- [Command Execution](#command-execution): [Bash](#bash)
+- [Agent Tools](#agent-tools): [Agent (earlier versions: `Task`)](#agent-earlier-versions-task), [SubagentHandback](#subagenthandback)
+- [Web Tools](#web-tools): [WebFetch](#webfetch), [WebSearch](#websearch)
+- [Task Management](#task-management): [TodoWrite](#todowrite)
+- [MCP Tools](#mcp-tools)
+
 ## Top-level fields
 
 ```json

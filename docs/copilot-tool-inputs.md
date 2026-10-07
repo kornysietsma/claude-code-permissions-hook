@@ -6,6 +6,13 @@ What GitHub Copilot CLI sends to a `preToolUse` hook on stdin, and so what `matc
 >
 > **The audit log is the authoritative source.** Set `level = "all"` and `max_value_len = 0` in `[audit]` to record exactly what your Copilot CLI version sends (see [tests/README.md](../tests/README.md)).
 
+**Contents**
+
+- [Top-level fields](#top-level-fields)
+- [Per-tool `toolArgs`](#per-tool-toolargs)
+- [Decision output](#decision-output)
+- [Hooks and where they run](#hooks-and-where-they-run)
+
 ## Top-level fields
 
 This hook handles Copilot's native camelCase `preToolUse` format:
