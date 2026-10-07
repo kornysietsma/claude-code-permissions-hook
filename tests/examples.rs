@@ -14,6 +14,9 @@ fn every_example_is_valid_for_its_agent_without_warnings() {
     let mut checked = 0;
     for entry in fs::read_dir(examples_dir()).unwrap() {
         let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
         let name = path.file_name().unwrap().to_str().unwrap();
         let agent = if name.contains("copilot") {
             Agent::Copilot
@@ -335,4 +338,47 @@ fn validate_summarises_each_example() {
          patterns: none\n\
          audit: /tmp/tool-gate-hook-mermaid.jsonl (level all, max_value_len 1024)"
     );
+}
+
+/// The TOML blocks marked as recipes (```` ```toml recipe ````) in a skill
+fn recipes(skill: &str) -> Vec<String> {
+    let mut recipes = vec![];
+    let mut current: Option<String> = None;
+    for line in skill.lines() {
+        match &mut current {
+            None if line == "```toml recipe" => current = Some(String::new()),
+            None => {}
+            Some(_) if line == "```" => recipes.extend(current.take()),
+            Some(recipe) => {
+                recipe.push_str(line);
+                recipe.push('\n');
+            }
+        }
+    }
+    assert!(current.is_none(), "unclosed recipe");
+    recipes
+}
+
+#[test]
+fn skill_recipes_are_valid_configs_for_their_agent() {
+    for agent in [Agent::Claude, Agent::Copilot] {
+        let name = format!("tool-gate-rules-{}", agent.name());
+        let skill =
+            fs::read_to_string(examples_dir().join("skills").join(&name).join("SKILL.md")).unwrap();
+        assert!(
+            skill.starts_with(&format!("---\nname: {name}\ndescription: ")),
+            "{name}: frontmatter"
+        );
+        let recipes = recipes(&skill);
+        assert!(recipes.len() >= 8, "{name}: {} recipes", recipes.len());
+        for recipe in recipes {
+            let config = Config::from_toml(&recipe, agent)
+                .unwrap_or_else(|e| panic!("{name}: {e:#}\n{recipe}"));
+            assert_eq!(
+                validate(agent, &config).warnings,
+                Vec::<String>::new(),
+                "{name}:\n{recipe}"
+            );
+        }
+    }
 }

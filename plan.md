@@ -10,9 +10,9 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 ## Status
 
-- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 9 (`git log` has the hash).
-- **Done:** steps 1 to 9.
-- **Next:** step 10, docs, README, AGENTS.md and skills.
+- **Branch** `shell-parsing`, not pushed; the PR is raised at the end. The last commit is step 10 (`git log` has the hash).
+- **Done:** steps 1 to 9; step 10 apart from its manual checks.
+- **Next:** step 10's manual checks (the author), then step 11.
 
 ### Working on this branch
 
@@ -113,13 +113,13 @@ Tests:
 
 ### Step 10: docs, README, AGENTS.md and skills
 
-- [ ] `docs/configuration-guide.md`: a new shell section (segments, static words, command rules, `paths_under`, construct rules, floors, `[shell]`, evaluation order, reasons, `explain`, zsh notes, known gaps). Update the regex caveats, the shell-chaining note, the worked examples, and the audit section (`kind`, `segment`, floor matches, `shell`). Rule indexes are per kind.
-- [ ] `README.md`: a short pitch for compound commands, and `explain`.
-- [ ] `AGENTS.md`: the code structure (`src/shell/`), the out-of-scope list (compound commands are now parsed; control structures aren't yet), the brush-parser pinning note, and the corpus and differential test notes. Keep the `legacy_python` heredoc caveat until step 11.
-- [ ] `examples/skills/tool-gate-rules-claude/SKILL.md` and `…-copilot/SKILL.md`, following the spec's outline, with valid YAML frontmatter (`name`, `description`). Include the tips below under "For the skills and docs".
-- [ ] Test: every TOML snippet in the skills under a "recipe" marker is extracted and loaded with `Config::from_toml` for its agent (`tests/examples.rs`).
+- [x] `docs/configuration-guide.md`: a new shell section (segments, static words, command rules, `paths_under`, construct rules, floors, `[shell]`, evaluation order, reasons, `explain`, zsh notes, known gaps). Update the regex caveats, the shell-chaining note, the worked examples, and the audit section (`kind`, `segment`, floor matches, `shell`). Rule indexes are per kind.
+- [x] `README.md`: a short pitch for compound commands, and `explain`.
+- [x] `AGENTS.md`: the code structure (`src/shell/`), the out-of-scope list (compound commands are now parsed; control structures aren't yet), the brush-parser pinning note, and the corpus and differential test notes. Keep the `legacy_python` heredoc caveat until step 11.
+- [x] `examples/skills/tool-gate-rules-claude/SKILL.md` and `…-copilot/SKILL.md`, following the spec's outline, with valid YAML frontmatter (`name`, `description`). Include the tips below under "For the skills and docs".
+- [x] Test: every TOML snippet in the skills under a "recipe" marker is extracted and loaded with `Config::from_toml` for its agent (`tests/examples.rs`).
 
-**Automated:** the skill-recipe test; the examples test (count updated).
+**Automated:** the skill-recipe test; the examples test (count updated). Done: recipes are fenced as ```` ```toml recipe ````, and the test also checks frontmatter and that recipes validate without warnings. Also updated beyond the plan: `tests/README.md`, and `scripts/copilot-verify.sh` / `docs/copilot-verification.md` (their `bash` rules are now command rules, since an allow `[[rule]]` on `bash` is a config error).
 
 **Manual:**
 - Read the guide top to bottom as a new user.

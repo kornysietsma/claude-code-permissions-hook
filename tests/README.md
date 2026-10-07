@@ -18,7 +18,11 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 | `claude.rs` | Acceptance tests for the Claude agent: output shape, tiers and precedence, each matcher, `under` with symlinks and `..`, error handling |
 | `copilot.rs` | The same for Copilot: flat output shape, lowercase tool names, `toolArgs` rules, mismatched payloads in both directions |
 | `audit.rs` | Audit records with a fixed clock, level filtering, truncation, error records |
-| `examples.rs` | Every file in `examples/` validates without warnings; the Mermaid example's scenarios |
+| `shell.rs` | Shell commands for both agents: segments, command rules, `paths_under`, `cd`, construct rules, each floor beating a broad allow and losing to a deny, config errors |
+| `shell_differential.rs` | Our word splitting against `zsh -f` and `/bin/bash` (skipped if a shell is missing); commands the shells disagree on must hit a floor |
+| `shell_corpus.rs` | `fixtures/shell/corpus.jsonl`: sanitised real commands with expected segment names and floors. Plus an ignored summary of a local, gitignored corpus (`scripts/shell-corpus.sh` builds it from an audit log) |
+| `explain.rs` | `explain` with a command or a payload / audit record, reasons, truncated records |
+| `examples.rs` | Every file in `examples/` validates without warnings, with its summary; the examples' scenarios; the recipes in `examples/skills/` load |
 | `common/mod.rs` | Shared helpers: loading a fixture, running the hook with a config in a temp directory |
 | `smoke.rs` | A handful of tests that spawn the real binary: CLI wiring, exit codes, `validate` output, the real audit file |
 | `fixtures/claude/`, `fixtures/copilot/` | Sample hook payloads |

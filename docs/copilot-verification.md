@@ -80,16 +80,16 @@ This creates `~/tgh-copilot-verify/` (a git repo), validates the generated confi
 
 The audit-only hooks never decide anything, so any prompt or block you see comes from `user.toml`. The absolute binary path (`~/.cargo/bin/...`) is used throughout so the session doesn't depend on Copilot's `PATH`.
 
-`user.toml` rules (the field names `toolArgs.command` and `toolArgs.path` are the guesses being tested):
+`user.toml` rules (the field name `toolArgs.path` is the guess being tested; `bash` commands are checked with command rules). The row numbers below are this checklist's, not the hook's: the hook numbers each rule kind separately (`rule #5`, `command rule #2`).
 
 | # | Decision | Matches | Why it's useful |
 |---|---|---|---|
-| 1 | allow | `bash` with command starting `echo tgh-allow`, no chaining | Shell commands normally prompt, so an auto-run proves the allow worked |
-| 2 | deny | `bash` with command containing `tgh-deny` | Reason: "tgh-verify: this command is denied on purpose" |
+| 1 | allow | command rule: a `bash` command starting `echo tgh-allow` | Shell commands normally prompt, so an auto-run proves the allow worked |
+| 2 | deny | command rule: a `bash` command containing `tgh-deny` | Reason: "tgh-verify: this command is denied on purpose" |
 | 3 | ask | tool `glob`, no field conditions | Works even if the field names are wrong, so the ask path is tested regardless |
 | 4 | ask | `view` with path containing `tgh-ask` | Views normally run without a prompt, so a prompt proves the ask worked |
 | 5 | deny | `view`, `create` or `edit` with path containing `tgh-blocked` | Reason: "tgh-verify: blocked paths are denied on purpose". (Named "blocked", not "secret": the first run's model refused to touch a file called `tgh-secret.txt` before the hook ever ran) |
-| 6 | allow | `bash` with command exactly `touch tgh-allow-file.txt` | `touch` normally prompts, so an auto-run proves an allow suppresses a prompt (`echo` doesn't prompt anyway, so rule 1 proves nothing about that) |
+| 6 | allow | command rule: a `bash` command exactly `touch tgh-allow-file.txt` | `touch` normally prompts, so an auto-run proves an allow suppresses a prompt (`echo` doesn't prompt anyway, so rule 1 proves nothing about that) |
 | 7 | deny | `apply_patch` whose patch text names a `tgh-blocked` file | The patch is a string, so this matches `toolArgs` as a whole. Reason as rule 5 |
 
 ## 4. Sanity check without Copilot (optional)
@@ -100,7 +100,7 @@ echo '{"sessionId":"s","timestamp":1,"cwd":"'"$PWD"'","toolName":"bash","toolArg
   | ~/.cargo/bin/tool-gate-hook run --agent copilot --config user.toml
 ```
 
-Expected: `{"permissionDecision":"deny","permissionDecisionReason":"tgh-verify: this command is denied on purpose"}`. Then `scripts/copilot-verify.sh report` (from the source directory, or give the full path) shows the record. Delete the `audit/` files afterwards so the session starts clean: `rm ~/tgh-copilot-verify/audit/*`.
+Expected: `{"permissionDecision":"deny","permissionDecisionReason":"tgh-verify: this command is denied on purpose — in \"echo tgh-deny\""}`. Then `scripts/copilot-verify.sh report` (from the source directory, or give the full path) shows the record. Delete the `audit/` files afterwards so the session starts clean: `rm ~/tgh-copilot-verify/audit/*`.
 
 ## 5. The session
 
@@ -126,7 +126,7 @@ Accept the folder trust prompt if asked. Give the prompts below **one at a time,
 | # | Prompt | Expected |
 |---|---|---|
 | 7 | `Use the bash tool to run exactly: echo tgh-allow` | Runs **without a prompt** (rule 1) |
-| 8 | `Use the bash tool to run exactly: echo tgh-allow && echo chained` | Normal Copilot prompt (the chain defeats the allow) |
+| 8 | `Use the bash tool to run exactly: echo tgh-allow && echo chained` | Normal Copilot prompt (`echo chained` matches no rule, so the whole command passes through) |
 | 9 | `Use the bash tool to run exactly: echo tgh-deny` | **Blocked**. Note whether you or Copilot see "denied on purpose", and what Copilot says |
 | 10 | `Use the glob tool to find *.md files` | **Prompts** (rule 3, even though glob normally doesn't) |
 | 11 | `Use the view tool to show tgh-ask.txt` | **Prompts** (rule 4). If it doesn't, `toolArgs.path` may be the wrong field name |
@@ -137,12 +137,12 @@ Accept the folder trust prompt if asked. Give the prompts below **one at a time,
 Break the user-level config on purpose, from another terminal:
 
 ```bash
-printf '\n[[rule]]\ndecision = "allow"\nmatch."toolArgs.command" = { regex = "(unclosed" }\n' >> ~/tgh-copilot-verify/user.toml
+printf '\n[[rule]]\ndecision = "ask"\ntool = "view"\nmatch."toolArgs.path" = { regex = "(unclosed" }\n' >> ~/tgh-copilot-verify/user.toml
 ```
 
 | # | Prompt | Expected |
 |---|---|---|
-| 13 | `Use the view tool to show README.md` | **Prompts** with a config error mentioning the path and rule #8. Is the message readable? |
+| 13 | `Use the view tool to show README.md` | **Prompts** with a config error mentioning the path and rule #5. Is the message readable? |
 
 Restore it with `scripts/copilot-verify.sh setup` (it rewrites every generated file but leaves `audit/` alone), then run prompt 2 again to confirm it no longer prompts.
 

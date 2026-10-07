@@ -7,6 +7,8 @@ A `PreToolUse` hook for **Claude Code** and **GitHub Copilot CLI** (macOS, local
 
 Both agents use the same rule engine; only the payload shape and tool names differ.
 
+Shell commands are **parsed**, not matched as text: `cargo build 2>&1 && cargo test` is two commands, and it is allowed when both are. A heredoc or commit message is data, never a command. Anything the hook can't check without running the shell (variables, globs, `eval`, `xargs`, …) asks instead of being allowed.
+
 This is a workaround for the limits of the agents' built-in permission rules (for example, Bash permissions that don't hold up against `a && b`). It is small and rule-driven, and you need Rust to build it.
 
 > **This has changed since I blogged about it.** It was `claude-code-permissions-hook`, a Claude-only hook with `[[allow]]` / `[[deny]]` rules; it has since been renamed, given a new config format and taught to work with Copilot CLI. To see the code as it was when the blog post was written, browse [the repository at that commit](https://github.com/kornysietsma/tool-gate-hook/tree/ca0dca0588319ca12bc03b0dc0d6bd4f3e563b75).
@@ -45,15 +47,20 @@ A minimal config:
 [audit]
 file = "/tmp/tool-gate-hook-claude.jsonl"
 
-[patterns]
-shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
-
-[[rule]]
+# Each command in a Bash call is checked on its own
+[[command_rule]]
 decision = "allow"
-tool = "Bash"
 description = "cargo workflow"
-match."tool_input.command" = { regex = '^cargo (build|test|check)\b', not_regex = "@shell_chain" }
+match.text = { regex = '^cargo (build|test|check)\b' }
 
+# Shell structure: ask before writing files outside the project
+[[construct_rule]]
+decision = "ask"
+construct = "redirect_write"
+description = "writes outside the project"
+outside = ["{cwd}", "/tmp"]
+
+# Any other tool: rules on the raw payload
 [[rule]]
 decision = "deny"
 tool = "Read"
@@ -61,6 +68,14 @@ description = "secrets files"
 reason = "Secrets files are off limits"
 match."tool_input.file_path" = { regex = '\.(env|secret)$' }
 ```
+
+To see how a command would be judged, and why:
+
+```bash
+tool-gate-hook explain --agent claude 'cargo build 2>&1 && cargo test > /etc/x'
+```
+
+It prints the audit record the call would get, with the reason the agent would be told. It also takes a logged call: `tail -1 /tmp/tool-gate-hook-claude.jsonl | tool-gate-hook explain --agent claude --payload -`.
 
 See the [Configuration guide](./docs/configuration-guide.md) for every option.
 
@@ -122,7 +137,7 @@ flowchart LR
     D -- allow --> Z[Allow]
 ```
 
-Every rule is evaluated; the final decision is **deny > ask > allow** regardless of order, and no match means passthrough. Shell chaining isn't parsed: allow rules carry a `not_regex = "@shell_chain"` safety net, so a chained command makes the rule not match and falls through to you.
+Every rule is evaluated; the final decision is **deny > ask > allow** regardless of order, and no match means passthrough. A shell command is allowed only when every command in it is allowed by a `[[command_rule]]`; anything the hook can't check statically asks. Details in [How decisions are made](./docs/configuration-guide.md#how-decisions-are-made).
 
 ## Errors
 
@@ -137,6 +152,7 @@ Every rule is evaluated; the final decision is **deny > ask > allow** regardless
 - **Nothing happens**: check the hook is registered, then run it by hand: `cat tests/fixtures/claude/bash.json | tool-gate-hook run --agent claude`. No output means passthrough.
 - **`command not found` in the agent**: use the absolute path to the binary (see Install).
 - **Every call asks with "config error"**: run `tool-gate-hook validate --agent claude` to see the error.
+- **A shell command asks or passes through unexpectedly**: `tool-gate-hook explain --agent claude 'THE COMMAND'` shows each command it found, which rules matched, and what asked.
 - **A rule never matches**: `validate` warns when a field path doesn't start with a payload key known for the agent (for example `toolArgs.path` in a Claude config). Set `level = "all"` and `max_value_len = 0` in `[audit]` and look at the real payloads in the log.
 
 ## Status
@@ -155,6 +171,7 @@ The details are in [Copilot payloads](./docs/copilot-tool-inputs.md).
 - [Configuration guide](./docs/configuration-guide.md): the full config reference
 - [Claude payloads](./docs/claude-tool-inputs.md) and [Copilot payloads](./docs/copilot-tool-inputs.md): what the agents send, i.e. what rules can match
 - [`examples/`](./examples): ready-to-copy configs, including an illustrative Mermaid workflow
+- [`examples/skills/`](./examples/skills): agent skills that teach a model (even a cheap one) to write rules for this tool; copy one into your agent's skills directory
 - [Copilot verification](./docs/copilot-verification.md): how Copilot CLI was checked on a real install, repeatable for a new Copilot version
 - [Review findings](./docs/review-findings.md): the reviews before and after the rework from `claude-code-permissions-hook`
 

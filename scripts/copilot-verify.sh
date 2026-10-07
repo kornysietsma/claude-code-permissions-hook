@@ -33,22 +33,18 @@ file = "__DIR__/audit/user.jsonl"
 level = "all"
 max_value_len = 0
 
-[patterns]
-shell_chain = ';|\||`|&&|&[^0-9]|&$|\$\('
-
+# Shell commands are checked one command at a time, with [[command_rule]]
 # Normally prompts, so an auto-run proves the allow worked
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "bash"
 description = "tgh-allow echo"
-match."toolArgs.command" = { regex = '^echo tgh-allow', not_regex = "@shell_chain" }
+match.text = { regex = '^echo tgh-allow' }
 
-[[rule]]
+[[command_rule]]
 decision = "deny"
-tool = "bash"
 description = "tgh-deny"
 reason = "tgh-verify: this command is denied on purpose"
-match."toolArgs.command" = { regex = 'tgh-deny' }
+match.text = { regex = 'tgh-deny' }
 
 # Matches on the tool name only, so it works even if toolArgs field names are wrong
 [[rule]]
@@ -71,11 +67,10 @@ reason = "tgh-verify: blocked paths are denied on purpose"
 match."toolArgs.path" = { regex = 'tgh-blocked' }
 
 # touch normally prompts (tgh-plain.txt is the control), so an auto-run proves the allow worked
-[[rule]]
+[[command_rule]]
 decision = "allow"
-tool = "bash"
 description = "touch tgh-allow-file"
-match."toolArgs.command" = { regex = '^touch tgh-allow-file\.txt$' }
+match.text = { regex = '^touch tgh-allow-file\.txt$' }
 
 # File changes arrive as apply_patch with a string toolArgs
 [[rule]]
