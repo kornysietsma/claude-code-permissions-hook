@@ -344,18 +344,18 @@ Keep `run()` free of I/O beyond reading the config; `explain` reuses it.
   - remove `shell_chain` and `parent_dir`;
   - shell allows become command rules on `text`; file-touching ones use `paths_under`;
   - `legacy_python` becomes a deny command rule on `name` (`'(^|/)(python[0-9.]*|pip[0-9]*|pipenv|virtualenv|pyenv)$'`);
-  - an allow command rule for harmless builtins (`true`, `false`, `:`, `echo`, `printf` without `-v`, `test`, `[`). `printf -v`, `read`, `mapfile`/`readarray` and `getopts` set variables, so they stay out of it; there is no floor for them;
+  - an allow command rule for harmless builtins (`true`, `false`, `:`, `echo`, `printf` without `-v`, `test`, `[`). `printf -v`, `read`, `mapfile`/`readarray` and `getopts` set variables, so they stay out of it; there is no floor for them. The rule matches `name` (`[` is re-quoted as `'['` in `text`) and excludes `printf -v` with a `not_regex` on `text`;
   - an ask command rule for `sudo`;
   - construct rules: ask on `background`, ask on `redirect_write` outside `{cwd}` and `/tmp`;
   - a `[shell] safe_env` list.
-- `docs/configuration-guide.md`: a shell section (segments, command rules, `paths_under`, construct rules, floors, `[shell]`, evaluation, `explain`); update "Regexes see text, not shell syntax", the shell-chaining note and the worked examples; the audit section.
+- `docs/configuration-guide.md`: a shell section (segments, command rules, `paths_under`, construct rules, floors, `[shell]`, evaluation, `explain`); update "Regexes see text, not shell syntax", the shell-chaining note and the worked examples; the audit section. A worked example shows one command going through parsing, command rules, construct rules and the combiner as a Mermaid diagram, for visual thinkers. The guide and both payload docs have a table of contents.
 - `README.md`: brief mention and `explain`.
 - `AGENTS.md`: update the code structure, the "out of scope" list (compound commands are now parsed), and remove the note about `legacy_python` firing on heredocs once the author's live config is migrated.
 - Skills: `examples/skills/tool-gate-rules-claude/SKILL.md` and `examples/skills/tool-gate-rules-copilot/SKILL.md`, each using only its agent's tool names and field paths. Contents:
   1. When to use: the user wants a tool call auto-allowed, denied or always asked; or gives an audit entry to turn into a rule.
   2. Mental model: `[[rule]]` for tool payloads, `[[command_rule]]` per shell command, `[[construct_rule]]` for shell structure; deny > ask > allow > passthrough; floors can't be overridden; shell allows only via command rules.
   3. Workflow: find the config; read the audit entry or run `explain`; pick the segment or construct; write the narrowest rule; `validate`; `explain` the original command again and confirm the decision changed and nothing broadened.
-  4. Recipes: allow a command family; allow file operations within a directory (`paths_under`); deny by command name; ask on writes outside the project; add a safe env var; deny a secrets path for file tools; subagent-only rules.
+  4. Recipes: allow a command family; allow file operations within a directory (`paths_under`); deny by command name; ask on writes outside the project; add a safe env var; deny a secrets path for file tools; subagent-only rules (Copilot payloads don't mark sub-agent calls, so its skill asks on the `task` tool instead). Recipes are fenced as ```` ```toml recipe ```` blocks, each a complete config fragment.
   5. Safety rules: narrowest rule; anchor with `^`; never broad allows (`'^.*'`, bare `rm`/`curl`/`git push`); never try to work around a floor; show the rule to the user, then edit the config.
   6. Reference: matchers, segment fields (`text`, `name`), construct and floor names, single-quoted TOML regexes.
 
@@ -379,7 +379,7 @@ Keep `run()` free of I/O beyond reading the config; `explain` reuses it.
   - config errors: allow `[[rule]]` on the shell tool (including no `tool`), allow construct rule, unknown construct, empty command rule.
   - Copilot `bash` payloads and `copilot_via_claude` payloads.
   - audit record `shell` shape; `explain` output for a command and for an audit record.
-- Example configs and skills' recipe snippets are validated in tests.
+- Example configs (with their exact `validate` summaries) and the skills' recipe blocks are loaded for their agent in tests and must validate without warnings; the skills' frontmatter is checked too.
 
 ## Implementation order
 
