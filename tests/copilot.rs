@@ -156,12 +156,60 @@ tool = "glob|rg"
 match."toolArgs.paths" = { under = ["{cwd}"] }
 "#;
 
-    for tool in ["glob", "rg"] {
+    for tool in ["glob", "rg", "rg_paths_list"] {
         assert_eq!(
             decision(&run_copilot(config, &fixture(tool))),
             Some("allow"),
             "{tool}"
         );
+    }
+}
+
+#[test]
+fn an_array_field_allows_only_if_every_element_matches_but_asks_or_denies_if_any_does() {
+    let config = r#"
+[[rule]]
+decision = "allow"
+tool = "rg"
+match."toolArgs.paths" = { under = ["{cwd}"], not_regex = '/secret' }
+
+[[rule]]
+decision = "deny"
+tool = "rg"
+match."toolArgs.paths" = { regex = '\.env$' }
+
+[[rule]]
+decision = "ask"
+tool = "rg"
+match."toolArgs.paths" = { regex = '/secret' }
+"#;
+    let with_paths = |paths: Value| {
+        let mut payload: Value = serde_json::from_str(&fixture("rg_paths_list")).unwrap();
+        payload["toolArgs"]["paths"] = paths;
+        run_copilot(config, &payload.to_string())
+    };
+
+    for (paths, expected) in [
+        (
+            json!(["/Users/test/project/a", "/Users/test/project/b"]),
+            Some("allow"),
+        ),
+        (json!(["/Users/test/project/a", "/etc"]), None),
+        (
+            json!(["/Users/test/project/a", "/Users/test/project/.env"]),
+            Some("deny"),
+        ),
+        (
+            json!(["/Users/test/project/a", "/Users/test/project/secret"]),
+            Some("ask"),
+        ),
+        (
+            json!(["/Users/test/project/a", { "path": "/Users/test/project/b" }]),
+            None,
+        ),
+        (json!([]), None),
+    ] {
+        assert_eq!(decision(&with_paths(paths.clone())), expected, "{paths}");
     }
 }
 

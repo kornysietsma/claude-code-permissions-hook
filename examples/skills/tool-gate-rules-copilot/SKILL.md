@@ -161,7 +161,7 @@ description = "sub-agents"
 
 **Floor names** (seen in `explain` output; ask instead of allowing; not configurable): `parse_error`, `unsupported`, `expansion`, `dynamic_command`, `env_assign`, `shell_reentry`, `exec_tool`, `cd`.
 
-**Copilot fields:** `bash` → `toolArgs.command` (rules see it as segments); `view` and `create` → `toolArgs.path`; `glob` and `rg` → `toolArgs.paths` (a directory string); `apply_patch` → `toolArgs` is a string; `task` → `toolArgs.prompt`, `toolArgs.agent_type`.
+**Copilot fields:** `bash` → `toolArgs.command` (rules see it as segments); `view` and `create` → `toolArgs.path`; `glob` and `rg` → `toolArgs.paths` (a directory, or a list of them: an allow needs every element to match, a deny or ask any one); `apply_patch` → `toolArgs` is a string; `task` → `toolArgs.prompt`, `toolArgs.agent_type`.
 
 **TOML:** write regexes in single quotes (`'^cargo\b'`), so backslashes need no doubling. Quote dotted payload paths: `match."toolArgs.path"`. Rules of each kind are numbered separately from 1 in file order (`command rule #3`); new rules can go anywhere.
 

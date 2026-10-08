@@ -331,7 +331,7 @@ impl Rule {
     fn matches_value(&self, value: &Value, location: &Location<'_>, context: &Context) -> bool {
         self.fields
             .iter()
-            .all(|field| field.matches(value, location, context))
+            .all(|field| field.matches(value, self.decision, location, context))
     }
 
     pub fn label(&self) -> String {
@@ -412,8 +412,41 @@ fn default_reason(decision: Decision, label: &str) -> String {
 }
 
 impl FieldCondition {
-    fn matches(&self, payload: &Value, location: &Location<'_>, context: &Context) -> bool {
+    /// An array matches element by element: an allow needs every element to match, an ask or
+    /// deny any one. An empty array matches only `exists`.
+    fn matches(
+        &self,
+        payload: &Value,
+        decision: Decision,
+        location: &Location<'_>,
+        context: &Context,
+    ) -> bool {
         let value = lookup(payload, &self.path);
+        match value {
+            Some(Value::Array(elements)) if !self.is_exists_only() => {
+                let element_matches =
+                    |element: &Value| self.value_matches(Some(element), location, context);
+                match decision {
+                    Decision::Allow => !elements.is_empty() && elements.iter().all(element_matches),
+                    Decision::Ask | Decision::Deny => elements.iter().any(element_matches),
+                }
+            }
+            _ => self.value_matches(value, location, context),
+        }
+    }
+
+    fn is_exists_only(&self) -> bool {
+        self.matchers
+            .iter()
+            .all(|matcher| matches!(matcher, FieldMatcher::Exists(_)))
+    }
+
+    fn value_matches(
+        &self,
+        value: Option<&Value>,
+        location: &Location<'_>,
+        context: &Context,
+    ) -> bool {
         let text = value.and_then(as_text);
         self.matchers.iter().all(|matcher| match (matcher, &text) {
             (FieldMatcher::Exists(expected), _) => value.is_some() == *expected,

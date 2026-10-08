@@ -133,7 +133,8 @@ Unknown keys anywhere in a rule are errors, so a typo like `comand` can't silent
 Each `match` key is a dotted path into the **raw payload** the agent sends, so any field can be matched: `tool_input.file_path`, `toolArgs.path`, `cwd`, `permission_mode`, `agent_type`, and so on. See [Claude payloads](./claude-tool-inputs.md) and [Copilot payloads](./copilot-tool-inputs.md).
 
 - A path walks objects by key. A **missing** path makes the matcher fail (the rule doesn't match), except for `exists = false`.
-- Strings are matched as they are. Numbers and booleans are matched against their JSON text (`120000`, `true`). `null`, arrays and objects only work with `exists`.
+- Strings are matched as they are. Numbers and booleans are matched against their JSON text (`120000`, `true`). `null` and objects only work with `exists`.
+- An **array** is matched element by element, with all of a condition's matchers applied to the same element: an `allow` rule needs **every** element to match, an `ask` or `deny` rule **any** one. So an allow on paths under `{cwd}` fails if one path is outside, and a deny on `\.env$` fires if one path ends in `.env`. An empty array matches only `exists`.
 - Quote the path in TOML: `match."tool_input.file_path" = { … }`.
 
 ## Matchers
@@ -226,7 +227,7 @@ Rules see each segment as a JSON object:
 | `source` | The segment as the parser renders it, for the audit log. Normalised: `2>&1` becomes `2>& 1`. |
 | `dirs` | Every directory the shell might be in when the segment runs; only shown after a `cd`. |
 
-Write rules on `text` (for a command and its arguments) or `name` (for the command alone). The other fields can be matched by field path (`env.RUST_LOG`), but `text` and `name` cover nearly every need.
+Write rules on `text` (for a command and its arguments) or `name` (for the command alone). The other fields can be matched by field path (`env.RUST_LOG`, or `args`, element by element: `match.args = { regex = '\.env$' }` in a deny fires if any argument ends in `.env`), but `text` and `name` cover nearly every need.
 
 ### What can't be allowed: floors
 

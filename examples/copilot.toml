@@ -4,7 +4,7 @@
 #
 # Copilot tool names are lowercase (bash, view, create, glob, rg, task, apply_patch, ...) and
 # the tool's arguments live under `toolArgs`. Seen with a real Copilot CLI: bash has
-# `command`, view and create have `path`, glob and rg have `paths` (a directory string).
+# `command`, view and create have `path`, glob and rg have `paths` (a directory, or a list of them; an allow needs every one to match).
 # File changes depend on the model: `create` (path, file_text) or `apply_patch`, whose
 # `toolArgs` is the patch text itself (a string, so no field path); cover both.
 #

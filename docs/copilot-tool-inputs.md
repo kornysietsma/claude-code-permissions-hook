@@ -44,8 +44,8 @@ As captured on 2026-10-04.
 |------|------------|---------|
 | `bash` | object: `command`, `description` | `{"command":"ls -la","description":"List files in the repository root"}` |
 | `view` | object: `path` (absolute) | `{"path":"/Users/someone/project/README.md"}` |
-| `glob` | object: `pattern`, `paths` (a directory, as a string) | `{"paths":"/Users/someone/project","pattern":"*.md"}` |
-| `rg` | object: `pattern`, `paths` (a string), `output_mode`, `head_limit`, `-n` | `{"-n":true,"head_limit":100,"output_mode":"content","paths":"/Users/someone/project","pattern":"hello"}` |
+| `glob` | object: `pattern`, `paths` (a directory: a string, or a list of strings) | `{"paths":"/Users/someone/project","pattern":"*.md"}` |
+| `rg` | object: `pattern`, `paths` (a string, or a list of strings), `output_mode`, `head_limit`, `-n`, `glob` | `{"-n":true,"head_limit":100,"output_mode":"content","paths":"/Users/someone/project","pattern":"hello"}`; on 2026-10-08: `{"glob":"*.md","head_limit":5,"output_mode":"content","paths":["/Users/someone/project/skills"],"pattern":"description"}` |
 | `task` | object: `agent_type`, `description`, `mode`, `name`, `prompt` | `{"agent_type":"task","description":"List repository files","mode":"sync","name":"repo-file-list","prompt":"..."}` |
 | `create` (Haiku 4.5) | object: `path` (absolute), `file_text` | `{"file_text":"hello","path":"/Users/someone/project/notes2.txt"}` |
 | `apply_patch` (GPT model) | **a string**: the patch text | `"*** Begin Patch\n*** Update File: notes.txt\n@@\n-hello\n+goodbye\n*** End Patch\n"` |
@@ -55,7 +55,7 @@ Notes:
 - **File changes depend on the model.** Haiku 4.5 used `create` with `path` and `file_text`. The GPT model said it had no `create` tool and used `apply_patch`, so a config that gates file changes needs rules for both. `edit` was not seen (the old guess `path`, `old_str` and `new_str` is unconfirmed).
 - **`apply_patch` has a string for `toolArgs`.** Creating a file is `*** Add File: <path>` and changing one is `*** Update File: <path>`; the patch can also contain `*** Delete File:` and, in the patch format, `*** Move to:`. There is no path field and no `under` check: gate it with a regex on the whole string, for example `match."toolArgs" = { regex = '(?m)^\*\*\* (Add|Update|Delete) File: .*\.(env|secret)$' }`. Paths in a patch can be relative to `cwd`. A deny rule like that was confirmed to block a patch on a real Copilot.
 - **`grep` arrives as `rg`**, with the search directory in `paths`.
-- **`glob` and `rg` use `paths` (plural, a string), not `path`.** Only a single directory was seen; a list of paths has not been observed.
+- **`glob` and `rg` use `paths` (plural), not `path`.** It was a string on 2026-10-04 and a one-element list on 2026-10-08 (`rg`). Rules work for both: a list is matched element by element (an allow needs every path to match, a deny or ask any one).
 - **The task tool's name field is `task`** and its arguments include `prompt`, so a rule can match what a sub-agent is asked to do.
 - The model sometimes declined to call a tool at all (for example refusing to view a file called `tgh-secret.txt`, which never reached the hook), so a deny rule is a backstop, not the only line of defence.
 

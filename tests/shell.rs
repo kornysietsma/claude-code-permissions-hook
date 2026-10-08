@@ -913,3 +913,23 @@ fn reasons_quote_only_the_first_line_and_skip_repeats() {
         "{reason}"
     );
 }
+
+#[test]
+fn args_are_matched_element_by_element() {
+    let project = Project::new();
+    let config = "[[command_rule]]\ndecision = \"deny\"\nmatch.args = { regex = '\\.env$' }\n\n\
+                  [[command_rule]]\ndecision = \"allow\"\nmatch.args = { regex = '^[a-z]+$' }\n";
+    for (command, expected) in [
+        ("cat a \"my config.env\"", Some("deny")),
+        ("cat a b", Some("allow")),
+        ("cat a B", None),
+        ("pwd", None),
+    ] {
+        let decided = project.decision_with(config, command);
+        assert_eq!(
+            decided.as_ref().map(|(d, _)| d.as_str()),
+            expected,
+            "{command}"
+        );
+    }
+}
