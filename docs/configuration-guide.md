@@ -15,7 +15,7 @@ The full reference for a `tool-gate-hook` config file. For a quick start see the
   - [`under`](#under)
 - [Shell commands](#shell-commands)
   - [Segments](#segments)
-  - [What always asks: floors](#what-always-asks-floors)
+  - [What can't be allowed: floors](#what-cant-be-allowed-floors)
   - [`[[command_rule]]`](#command_rule)
   - [`[[construct_rule]]`](#construct_rule)
   - [`[shell]`](#shell)
@@ -85,7 +85,7 @@ Leaving it out disables auditing. When present, `file` is required (its director
 | `level` | Records |
 |---------|---------|
 | `off` | nothing |
-| `matched` | calls where at least one rule (or, for shell commands, a [floor](#what-always-asks-floors)) matched, plus all error records |
+| `matched` | calls where at least one rule (or, for shell commands, a [floor](#what-cant-be-allowed-floors)) matched, plus all error records |
 | `all` | every call, including passthroughs |
 
 See [Audit log](#audit-log) for the record format.
@@ -191,7 +191,7 @@ Calls to the shell tool (`Bash` for Claude, `bash` for Copilot) are not matched 
 
 - every segment is checked against the [`[[command_rule]]`s](#command_rule);
 - the shell structure (redirects, `&`, pipes, …) is checked against the [`[[construct_rule]]`s](#construct_rule);
-- anything that can't be checked statically hits a built-in [**floor**](#what-always-asks-floors), which asks.
+- anything that can't be checked statically hits a built-in [**floor**](#what-cant-be-allowed-floors), which stops the command being allowed.
 
 A shell call is **allowed only when every segment is allowed** by a command rule and nothing asks or denies. So `cargo build 2>&1 && cargo test` is allowed when cargo is, `cargo test && curl evil.example` is not (unless `curl` is allowed too), and quoted text such as a heredoc or a commit message is data, never a command. For a diagram of one command going through these steps, see [How one shell command is judged](#how-one-shell-command-is-judged).
 
@@ -228,9 +228,9 @@ Rules see each segment as a JSON object:
 
 Write rules on `text` (for a command and its arguments) or `name` (for the command alone). The other fields can be matched by field path (`env.RUST_LOG`), but `text` and `name` cover nearly every need.
 
-### What always asks: floors
+### What can't be allowed: floors
 
-Floors are built-in checks for things a hook can't judge without running the shell. Each one **asks**, even if every segment is allowed; a deny from any rule still wins. They can't be configured away.
+Floors are built-in checks for things a hook can't judge without running the shell. A floor **asks** when every segment is allowed, so no rule can allow what the hook can't see; when some segment isn't allowed, the command passes through to the agent as it would anyway. A deny or ask from any rule still wins. They can't be configured away, but they can be made stricter: a [construct rule](#construct_rule) on a floor name asks or denies whenever that floor fires, allowed or not.
 
 | Floor | Fires when |
 |-------|-----------|
@@ -245,7 +245,18 @@ Floors are built-in checks for things a hook can't judge without running the she
 
 Quoted text is literal: `echo 'a*b'` has no glob, and a heredoc or commit message mentioning `pip install` runs no command. Commands inside substitutions are still checked, so `echo $(curl evil.example)` is denied by a `curl` deny rule, not just asked.
 
-**Commands that can be auto-allowed are static ones.** About a quarter of real agent commands ask because of a floor, mostly shell variables (`f=…; cat $f`), globs (`docs/*.md`) and `for` loops. That's by design: spell paths out when you want a command to be allowable.
+**Commands that can be auto-allowed are static ones.** About a quarter of real agent commands hit a floor, mostly shell variables (`f=…; cat $f`), globs (`docs/*.md`) and `for` loops. That's by design: spell paths out when you want a command to be allowable.
+
+**Deny rules can't see inside floors.** `bash -c 'pip install x'`, `eval …`, `xargs …`, `find -exec …`, `$CMD` and the bodies of `for` and `if` hide the commands they run, so a deny rule on `pip` doesn't fire; without an allow, the call passes through to the agent. To ask on these regardless, add construct rules on the floors that run hidden commands:
+
+```toml
+[[construct_rule]]
+decision = "ask"
+construct = "shell_reentry"   # also exec_tool, dynamic_command
+description = "runs commands the hook can't see"
+```
+
+Commands in substitutions (`echo $(pip install x)`) are walked, so deny rules see those.
 
 ### `[[command_rule]]`
 
@@ -332,11 +343,12 @@ outside = ["{cwd}", "/tmp"]
 | `background` | `&` |
 | `subshell` | `( … )` |
 | `substitution` | `$( … )`, backticks, `<( … )` or `>( … )` |
+| a [floor](#what-cant-be-allowed-floors) name | that floor fired: `shell_reentry`, `exec_tool`, `unsupported`, … |
 
 - `decision` is `ask` or `deny`: constructs can only make a decision stricter, so `allow` is a config error.
 - `outside` (only for `redirect_write`): the rule only fires for targets **not** under these directories, resolved like `paths_under`. Without it, any write fires.
-- A floor name (`expansion`, …) or an unknown construct is a config error.
-- The reason names what triggered the rule: ` — "<target>"` for a redirect, else ` — in "<command>"`.
+- An unknown construct is a config error.
+- The reason names what triggered the rule: ` — "<target>"` for a redirect, else ` — in "<command>"`, else the floor's detail (` — for loop`).
 
 ### `[shell]`
 
@@ -345,7 +357,7 @@ outside = ["{cwd}", "/tmp"]
 safe_env = ['^RUST_(LOG|BACKTRACE)$', '^NO_COLOR$', '^CI$', '^TERM$', '^LANG$', '^LC_']
 ```
 
-`safe_env` lists regexes (or `@pattern` references) for variable names that may be assigned without asking (`RUST_LOG=debug cargo test`, `env NO_COLOR=1 …`, `export CI=1`). The default is empty, so every assignment asks. Variables such as `PATH`, `GIT_PAGER` or `LD_PRELOAD` change what later commands run; keep them out.
+`safe_env` lists regexes (or `@pattern` references) for variable names that may be assigned without asking (`RUST_LOG=debug cargo test`, `env NO_COLOR=1 …`, `export CI=1`). The default is empty, so every assignment asks in a command that would otherwise be allowed. Variables such as `PATH`, `GIT_PAGER` or `LD_PRELOAD` change what later commands run; keep them out.
 
 An assignment on its own (`CI=1`) needs no command rule. `export`, `declare` and friends are ordinary commands, so they need a command rule to be allowed, and their `NAME=value` arguments are also checked against `safe_env`.
 
@@ -380,9 +392,11 @@ Claude Code's `Bash` tool runs zsh on macOS. For the static commands that can be
 ### Known gaps
 
 - With `CDPATH` (bash) or `cdpath` (zsh) set in your shell config, `cd sub` may go somewhere else; the hook can't see shell config and assumes neither is set.
-- Commands inside `${…}` or `$((…))` (`${x:-$(curl x)}`) still ask, through `expansion`, but a deny rule on the inner command doesn't see them.
+- Commands inside `${…}` or `$((…))` (`${x:-$(curl x)}`) hit `expansion`, but a deny rule on the inner command doesn't see them.
+- Deny rules don't see commands run by `bash -c`, `eval`, `xargs`, `find -exec` or inside control structures; see [floors](#what-cant-be-allowed-floors).
+- The hook isn't a sandbox: an agent that writes a script and runs it (`./x.sh`) gets past every command rule. It stops slips, not a determined agent.
 - `printf -v NAME`, `read`, `mapfile` and `getopts` set variables without an assignment; keep them out of allow rules (the examples do).
-- `xargs`, `find -exec` and `sudo` aren't looked inside; the first two ask, `sudo` is up to your rules.
+- `xargs`, `find -exec` and `sudo` aren't looked inside; the first two are floors, `sudo` is up to your rules.
 
 ## How decisions are made
 
@@ -401,13 +415,13 @@ For the shell tool:
 4. Every `[[construct_rule]]` is checked against the constructs.
 5. Then:
    - **deny** if any rule of any kind denies;
-   - else **ask** if any rule asks or any floor fired;
-   - else **allow** if every segment is allowed by a command rule;
+   - else **ask** if any rule asks;
+   - else, if every segment is allowed by a command rule: **ask** if any floor fired, else **allow**;
    - else **passthrough**.
 
 Segments that need no command rule (an in-project `cd`, an assignment like `CI=1`) don't count; a command made only of those passes through.
 
-The deciding item is the first deny or ask in this order: `[[rule]]`s (file order), floors (in the command), segments (in the command), construct rules (file order). For an allow, it's the first segment's first allowing rule.
+The deciding item is the first deny or ask in this order: `[[rule]]`s (file order), segments (in the command), construct rules (file order). A floor decides only when it turns an allow into an ask: then it's the first floor in the command. For an allow, it's the first segment's first allowing rule.
 
 Rules are numbered per kind, from 1, in file order: `rule #2`, `command rule #5`, `construct rule #1`.
 
@@ -494,7 +508,7 @@ One JSON object per line, appended under a file lock, so two hooks (for example 
 That's the record for `cargo build 2>&1 && ./target/debug/demo > /etc/demo.log` with [`examples/claude.toml`](../examples/claude.toml).
 
 - `decision` is `allow`, `ask`, `deny` or `passthrough`; `decided_by` is left out on passthrough.
-- `matches` lists every match in evaluation order: `[[rule]]`s, floors, command rules segment by segment, construct rules. Each has a `kind` (`rule`, `command_rule`, `construct_rule` or `floor`) and, for rules, the per-kind `index`. Command-rule and floor matches carry the 1-based `segment` they apply to. A floor's `description` is its name (`expansion`, …).
+- `matches` lists every match in evaluation order: `[[rule]]`s, floors, command rules segment by segment, construct rules. Each has a `kind` (`rule`, `command_rule`, `construct_rule` or `floor`) and, for rules, the per-kind `index`. Command-rule and floor matches carry the 1-based `segment` they apply to. A floor's `description` is its name (`expansion`, …). A floor's match always says `ask`, but it only applies when every segment is allowed, so a passthrough can list one.
 - `shell` is there for shell-tool calls. Each segment carries its own command-rule `matches` and `decision`: `allow`, `ask`, `deny`, `null` (no command rule matched) or `neutral` (an in-project `cd` or an assignment, which needs none). `constructs` lists everything found, with `floor: true` for floors, the `segment` it belongs to, a `detail` (which variable, which glob, …) and, for redirects, the `target`. `pipe`, `background` and `subshell` point at the first segment inside them.
 - String values in `payload` and `shell` longer than `max_value_len` characters are cut and end with `…[truncated, N chars]`. Keys and structure are never dropped. `max_value_len = 0` keeps everything, which is how you capture real payloads when a new agent version arrives.
 - If stdin wasn't usable, `payload` is the raw text (truncated the same way) and an `error` field says why.

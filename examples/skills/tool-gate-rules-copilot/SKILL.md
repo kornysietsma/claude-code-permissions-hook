@@ -17,10 +17,10 @@ description: Write or change tool-gate-hook rules for GitHub Copilot CLI, so a t
 
 - `[[rule]]` matches the raw payload of **any** tool call (`toolArgs.path`, `cwd`, …). For `bash` it can only **deny or ask**, never allow.
 - `[[command_rule]]` matches **each command inside a `bash` call** (a segment). `cargo build 2>&1 && cargo test` is two segments. This is the only way to allow shell commands.
-- `[[construct_rule]]` matches shell structure: `redirect_write`, `redirect_read`, `heredoc`, `pipe`, `background`, `subshell`, `substitution`. Ask or deny only.
+- `[[construct_rule]]` matches shell structure: `redirect_write`, `redirect_read`, `heredoc`, `pipe`, `background`, `subshell`, `substitution`, or a floor name (below) to ask whenever that floor fires. Ask or deny only.
 - Every rule is checked. **deny > ask > allow > passthrough** (passthrough = no rule decided, Copilot asks as usual).
 - A `bash` call is allowed only if **every** segment is allowed by a command rule and nothing asks or denies.
-- **Floors** are built-in checks that always ask: variables (`$X`), globs (`*.md`), command substitution, `for`/`if`/`while`, `eval`, `bash -c`, `xargs`, `find -exec`, `cd` outside the project, assignments not in `[shell] safe_env`, and anything that won't parse. **No rule can turn a floor into an allow.** A deny still wins over a floor.
+- **Floors** are built-in checks that turn an allow into an ask: variables (`$X`), globs (`*.md`), command substitution, `for`/`if`/`while`, `eval`, `bash -c`, `xargs`, `find -exec`, `cd` outside the project, assignments not in `[shell] safe_env`, and anything that won't parse. **No rule can turn a floor into an allow.** A deny still wins over a floor.
 
 ## Workflow
 
@@ -159,7 +159,7 @@ description = "sub-agents"
 
 **Construct rule names:** `redirect_write` (with optional `outside`), `redirect_read`, `heredoc`, `pipe`, `background`, `subshell`, `substitution`.
 
-**Floor names** (seen in `explain` output; always ask; not configurable): `parse_error`, `unsupported`, `expansion`, `dynamic_command`, `env_assign`, `shell_reentry`, `exec_tool`, `cd`.
+**Floor names** (seen in `explain` output; ask instead of allowing; not configurable): `parse_error`, `unsupported`, `expansion`, `dynamic_command`, `env_assign`, `shell_reentry`, `exec_tool`, `cd`.
 
 **Copilot fields:** `bash` → `toolArgs.command` (rules see it as segments); `view` and `create` → `toolArgs.path`; `glob` and `rg` → `toolArgs.paths` (a directory string); `apply_patch` → `toolArgs` is a string; `task` → `toolArgs.prompt`, `toolArgs.agent_type`.
 

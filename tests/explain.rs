@@ -178,7 +178,7 @@ fn explain_command(agent: Agent, command: &str) -> tool_gate_hook::Explanation {
 
 #[test]
 fn the_reason_the_agent_would_see_follows_the_decision() {
-    let explanation = explain_command(Agent::Claude, "cargo test && ls *.rs");
+    let explanation = explain_command(Agent::Claude, "cargo test *.rs");
     let record = explanation.record;
 
     assert_eq!(
@@ -192,7 +192,7 @@ fn the_reason_the_agent_would_see_follows_the_decision() {
     );
     assert_eq!(
         record["reason"],
-        "tool-gate-hook: ask — a value only the shell can work out (glob in *.rs), in \"ls *.rs\""
+        "tool-gate-hook: ask — a value only the shell can work out (glob in *.rs), in \"cargo test *.rs\""
     );
     assert_eq!(explanation.warnings, Vec::<String>::new());
 }

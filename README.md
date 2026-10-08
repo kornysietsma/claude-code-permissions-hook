@@ -137,7 +137,7 @@ flowchart LR
     D -- allow --> Z[Allow]
 ```
 
-Every rule is evaluated; the final decision is **deny > ask > allow** regardless of order, and no match means passthrough. A shell command is allowed only when every command in it is allowed by a `[[command_rule]]`; anything the hook can't check statically asks. Details in [How decisions are made](./docs/configuration-guide.md#how-decisions-are-made).
+Every rule is evaluated; the final decision is **deny > ask > allow** regardless of order, and no match means passthrough. A shell command is allowed only when every command in it is allowed by a `[[command_rule]]`; if it also has anything the hook can't check statically, it asks instead. Details in [How decisions are made](./docs/configuration-guide.md#how-decisions-are-made).
 
 ## Errors
 

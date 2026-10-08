@@ -8,7 +8,7 @@ This change parses shell commands into a syntax tree, splits them into **segment
 
 - **command rules** (`[[command_rule]]`) against each segment,
 - **construct rules** (`[[construct_rule]]`) against risky shell structure (redirects, backgrounding),
-- **floors**: built-in checks that force at least `ask` for things that can't be validated statically (shell re-entry, expansions, dynamic command names, unknown syntax, ...).
+- **floors**: built-in checks that turn an allow into `ask` for things that can't be validated statically (shell re-entry, expansions, dynamic command names, unknown syntax, ...).
 
 A shell call is allowed only when **every** segment is allowed by a command rule and nothing asks or denies. Shell parsing is always on; there is no opt-in switch. Backward compatibility with the current config format is **not** a goal (single user, just released): existing configs and examples are rewritten.
 
@@ -117,7 +117,7 @@ Unrecognised wrapper options → `unsupported` (ask floor). A wrapper with no co
 
 ### Floors
 
-Floors are built-in and can't be configured away. Each floor contributes `ask` (a deny from any rule still wins). The floor constructs:
+Floors are built-in and can't be configured away. A floor turns what would be an allow into `ask`; when some segment isn't allowed anyway, the call passes through, so a config without allows adds no prompts (a deny or ask from any rule still wins). Decided while dogfooding: with floors always asking, a quarter of the author's auto-mode Bash calls would have prompted. The floor constructs:
 
 | Construct | Fires when |
 |-----------|-----------|
@@ -198,7 +198,7 @@ outside = ["{cwd}", "/tmp"]
 | `subshell` | `( … )` | — |
 | `substitution` | `$( … )`, backticks, `<( … )`, `>( … )` | — |
 
-- Keys: `decision` (required), `construct` (required, one of the above; a floor name is a config error), `description`, `reason`, `outside` (only for `redirect_write`; elsewhere a config error).
+- Keys: `decision` (required), `construct` (required, one of the above or a floor name; a floor construct rule asks or denies whenever the floor fires, so deny rules' blind spots (`bash -c`, `eval`, `xargs`, loops) can still be made to ask), `description`, `reason`, `outside` (only for `redirect_write`; elsewhere a config error).
 - An `allow` construct rule is a config error: constructs can only raise to `ask` or `deny`.
 
 ### `[shell]`
@@ -229,12 +229,12 @@ For a shell-tool call:
 4. Evaluate every construct rule against the collected constructs.
 5. Combine:
    - **deny** if any `[[rule]]`, command rule or construct rule denies;
-   - else **ask** if any of them asks, or any floor fired;
-   - else **allow** if there is at least one non-neutral segment and every non-neutral segment's decision is allow;
+   - else **ask** if any of them asks;
+   - else, if there is at least one non-neutral segment and every non-neutral segment's decision is allow: **ask** if any floor fired, else **allow**;
    - else **passthrough** (some segment matched no command rule, or there were no segments).
-6. The deciding item: the first deny or ask in this order: `[[rule]]` matches (file order), floors (textual order), segments (textual order, first matching rule), construct rules (file order). For allow, the first segment's first allowing rule.
+6. The deciding item: the first deny or ask in this order: `[[rule]]` matches (file order), segments (textual order, first matching rule), construct rules (file order). When a floor turns an allow into an ask, the first floor (textual order). For allow, the first segment's first allowing rule.
 
-A command of only neutral segments (in-project `cd`, assignments) is a passthrough, unless a floor such as `env_assign` asks.
+A command of only neutral segments (in-project `cd`, assignments) is a passthrough, even if a floor such as `env_assign` fired.
 
 Non-shell tools evaluate exactly as today.
 

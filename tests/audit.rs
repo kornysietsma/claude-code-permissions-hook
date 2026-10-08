@@ -167,7 +167,7 @@ match.text = { regex = '^git push\b' }
     );
     assert_eq!(
         record["decided_by"],
-        json!({ "kind": "floor", "description": "expansion" })
+        json!({ "kind": "command_rule", "index": 2, "description": "git push" })
     );
 }
 

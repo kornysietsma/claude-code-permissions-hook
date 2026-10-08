@@ -12,7 +12,7 @@
 # is two segments. [[command_rule]]s match each segment's `text` (the command and its
 # arguments, unquoted, without redirects) or `name`; a bash call is allowed only when every
 # segment is allowed. Anything tool-gate-hook can't check statically (variables, globs,
-# substitutions, control structures, ...) asks.
+# substitutions, control structures, ...) turns that allow into an ask.
 
 [audit]
 file = "/tmp/tool-gate-hook-copilot.jsonl"
@@ -78,6 +78,23 @@ decision = "ask"
 construct = "redirect_write"
 description = "writes outside the project"
 outside = ["{cwd}", "/tmp"]
+
+# Commands the hook can't see into: deny rules don't reach the commands they run, so ask
+# even when no rule allows them
+[[construct_rule]]
+decision = "ask"
+construct = "shell_reentry"
+description = "runs shell code (bash -c, eval, source, ...)"
+
+[[construct_rule]]
+decision = "ask"
+construct = "exec_tool"
+description = "runs other commands (xargs, find -exec)"
+
+[[construct_rule]]
+decision = "ask"
+construct = "dynamic_command"
+description = "command name from a variable or substitution"
 
 [[command_rule]]
 decision = "deny"

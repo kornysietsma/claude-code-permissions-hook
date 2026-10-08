@@ -161,8 +161,12 @@ const DYNAMIC_COMMAND: &str = "tool-gate-hook: ask — a command name only the s
 #[test]
 fn syntax_that_cannot_be_checked_asks_even_when_every_segment_is_allowed() {
     for (command, description, why) in [
-        ("if true; then cargo test; fi", UNSUPPORTED, "if statement"),
-        ("for f in a b; do ls; done", UNSUPPORTED, "for loop"),
+        (
+            "cargo test && if true; then ls; fi",
+            UNSUPPORTED,
+            "if statement",
+        ),
+        ("ls; for f in a b; do ls; done", UNSUPPORTED, "for loop"),
         ("ls $HOME", EXPANSION, "variable in $HOME"),
         ("ls *.rs", EXPANSION, "glob in *.rs"),
         ("ls ${(f)x}", EXPANSION, "variable in ${(f)x}"),
@@ -188,10 +192,25 @@ fn syntax_that_cannot_be_checked_asks_even_when_every_segment_is_allowed() {
             "zsh =command expansion in =python3",
         ),
     ] {
-        assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
-        let reason = reason(command);
+        let (decision, reason) = decision_allowing_everything(command);
+        assert_eq!(decision, "ask", "{command}");
         assert!(reason.starts_with(description), "{command}: {reason}");
         assert!(reason.contains(why), "{command}: {reason}");
+    }
+}
+
+#[test]
+fn floors_only_ask_when_every_segment_is_allowed() {
+    for command in [
+        "foo $HOME",
+        "ls *.rs | foo",
+        "for f in a b; do ls; done",
+        "FOO=1 foo",
+        "FOO=1",
+        "bash -c 'ls'",
+        "ls 'unterminated",
+    ] {
+        assert_eq!(decision(command), None, "{command}");
     }
 }
 
@@ -219,10 +238,9 @@ fn other_assignments_ask() {
         ("export GIT_PAGER=x; git log", "GIT_PAGER"),
         ("declare -x GIT_PAGER=x; git log", "GIT_PAGER"),
         ("env GIT_PAGER=x git log", "GIT_PAGER"),
-        ("FOO=1", "FOO"),
     ] {
-        assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
-        let reason = reason(command);
+        let (decision, reason) = decision_allowing_everything(command);
+        assert_eq!(decision, "ask", "{command}");
         assert!(reason.starts_with(ENV_ASSIGN), "{command}: {reason}");
         assert!(
             reason.contains(&format!("assignment {name}")),
@@ -276,8 +294,8 @@ fn unknown_wrapper_options_ask() {
         ("env -i cargo test", "env option -i"),
         ("nice -5 cargo test", "nice option -5"),
     ] {
-        assert_eq!(decision(command).as_deref(), Some("ask"), "{command}");
-        let reason = reason(command);
+        let (decision, reason) = decision_allowing_everything(command);
+        assert_eq!(decision, "ask", "{command}");
         assert!(reason.starts_with(UNSUPPORTED), "{command}: {reason}");
         assert!(reason.contains(why), "{command}: {reason}");
     }
@@ -345,30 +363,10 @@ fn substitutions_ask_even_when_every_command_in_them_is_allowed() {
 }
 
 #[test]
-fn an_unparseable_command_asks() {
-    assert_eq!(decision("ls 'unterminated").as_deref(), Some("ask"));
-    assert!(
-        reason("ls 'unterminated")
-            .starts_with("tool-gate-hook: ask — the command could not be parsed")
-    );
-}
-
-#[test]
-fn a_missing_command_asks() {
+fn a_missing_command_passes_through() {
     let payload =
         r#"{"hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Bash","tool_input":{}}"#;
-    let output = run_with_config(Agent::Claude, CONFIG, payload)
-        .output
-        .unwrap();
-
-    assert_eq!(
-        output_field(Agent::Claude, &output, "permissionDecision"),
-        "ask"
-    );
-    assert!(
-        output_field(Agent::Claude, &output, "permissionDecisionReason")
-            .contains("no command string")
-    );
+    assert_eq!(run_with_config(Agent::Claude, CONFIG, payload).output, None);
 }
 
 #[test]
@@ -658,7 +656,7 @@ fn a_cd_that_may_not_have_happened_is_not_trusted() {
 fn other_directory_changes_ask() {
     let project = Project::new();
     for command in [
-        "cd /tmp && rm x",
+        "cd /tmp && ls",
         "cd && ls",
         "cd - && ls",
         "cd -P sub && ls",
@@ -669,11 +667,8 @@ fn other_directory_changes_ask() {
         "popd && ls",
         "env cd sub && ls",
     ] {
-        assert_eq!(
-            project.decision(command).as_deref(),
-            Some("ask"),
-            "{command}"
-        );
+        let decided = project.decision_with(ALLOW_EVERYTHING, command);
+        assert_eq!(decided.unwrap().0, "ask", "{command}");
     }
 }
 
@@ -807,13 +802,9 @@ fn construct_rule_config_errors() {
         ),
         (
             "decision = \"ask\"\nconstruct = \"pipes\"",
-            "construct rule #1: unknown construct \"pipes\" (expected one of substitution, \
-             heredoc, pipe, background, subshell, redirect_read, redirect_write)",
-        ),
-        (
-            "decision = \"ask\"\nconstruct = \"expansion\"",
-            "construct rule #1: expansion is a built-in check that always asks; \
-             it can't be configured",
+            "construct rule #1: unknown construct \"pipes\" (expected one of parse_error, \
+             unsupported, expansion, dynamic_command, env_assign, shell_reentry, exec_tool, cd, \
+             substitution, heredoc, pipe, background, subshell, redirect_read, redirect_write)",
         ),
         (
             "decision = \"ask\"\nconstruct = \"pipe\"\noutside = [\"{cwd}\"]",
@@ -832,6 +823,72 @@ fn construct_rule_config_errors() {
         let error = config_error(Agent::Claude, &format!("[[construct_rule]]\n{rule}"));
         assert!(error.contains(expected), "{rule}: {error}");
     }
+}
+
+const FLOOR_RULES_CONFIG: &str = r#"
+[[construct_rule]]
+decision = "ask"
+construct = "shell_reentry"
+description = "runs shell code"
+
+[[construct_rule]]
+decision = "deny"
+construct = "exec_tool"
+description = "runs other commands"
+
+[[construct_rule]]
+decision = "ask"
+construct = "unsupported"
+description = "unchecked syntax"
+"#;
+
+#[test]
+fn construct_rules_can_ask_or_deny_on_floors_nothing_allows() {
+    let project = Project::new();
+    for (command, expected) in [
+        (
+            "bash -c 'pip install x'",
+            Some((
+                "ask",
+                "tool-gate-hook: ask by construct rule #1 (runs shell code) — in \"bash -c 'pip install x'\"",
+            )),
+        ),
+        (
+            "echo x | xargs pip install",
+            Some((
+                "deny",
+                "tool-gate-hook: deny by construct rule #2 (runs other commands) — in \"xargs pip install\"",
+            )),
+        ),
+        (
+            "for f in a; do pip install x; done",
+            Some((
+                "ask",
+                "tool-gate-hook: ask by construct rule #3 (unchecked syntax) — for loop",
+            )),
+        ),
+        ("ls $HOME", None),
+    ] {
+        let decided = project.decision_with(FLOOR_RULES_CONFIG, command);
+        assert_eq!(
+            decided.as_ref().map(|(d, r)| (d.as_str(), r.as_str())),
+            expected,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn a_rule_that_asks_is_the_reason_rather_than_a_floor() {
+    assert_eq!(
+        reason("git push $REMOTE"),
+        "tool-gate-hook: ask by command rule #6 (git push) — in \"git push '$REMOTE'\""
+    );
+    let project = Project::new();
+    let (_, reason) = project
+        .decision_with(CONSTRUCTS_CONFIG, "foo *.md > /etc/x")
+        .unwrap();
+    assert!(reason.contains("by construct rule"), "{reason}");
 }
 
 #[test]

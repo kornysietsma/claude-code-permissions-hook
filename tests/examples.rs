@@ -88,11 +88,11 @@ fn mermaid_chained_commands_are_allowed_only_if_every_part_is() {
         None
     );
     assert_eq!(bash("rm -f /tmp/mermaid/a.png && rm -rf ~"), None);
+    assert_eq!(bash("curl -s -L -o /tmp/mermaid-download $(whoami)"), None);
     assert_eq!(
-        bash("curl -s -L -o /tmp/mermaid-download $(whoami)").as_deref(),
+        bash("npx -p @mermaid-js/mermaid-cli mmdc -i a.mmd -o $$-$RANDOM.png").as_deref(),
         Some("ask")
     );
-    assert_eq!(bash("echo $$-$RANDOM").as_deref(), Some("ask"));
 }
 
 #[test]
@@ -231,6 +231,24 @@ fn legacy_python_inside_substitutions_is_denied() {
 }
 
 #[test]
+fn commands_the_hook_cannot_see_into_ask() {
+    for command in [
+        "bash -c 'pip install x'",
+        "eval pip install x",
+        "echo x | xargs pip install",
+        "$CMD x",
+    ] {
+        for agent in [Agent::Claude, Agent::Copilot] {
+            assert_eq!(
+                example_decision(agent, command).as_deref(),
+                Some("ask"),
+                "{agent:?}: {command}"
+            );
+        }
+    }
+}
+
+#[test]
 fn safe_env_assignments_are_allowed_and_others_ask() {
     for agent in [Agent::Claude, Agent::Copilot] {
         let decision = |command: &str| {
@@ -305,8 +323,8 @@ fn validate_summarises_each_example() {
     };
     let safe_env =
         "safe_env: '^RUST_(LOG|BACKTRACE)$', '^NO_COLOR$', '^CI$', '^TERM$', '^LANG$', '^LC_'";
-    let constructs =
-        "2 construct rules (ask on background; ask on redirect_write outside {cwd}, /tmp)";
+    let constructs = "5 construct rules (ask on background; ask on redirect_write outside {cwd}, /tmp; \
+         ask on shell_reentry; ask on exec_tool; ask on dynamic_command)";
     assert_eq!(
         summary("claude.toml", Agent::Claude),
         format!(

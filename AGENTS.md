@@ -4,7 +4,7 @@ Guidance for coding agents (Claude Code, GitHub Copilot, …) working in this re
 
 ## Project Overview
 
-`tool-gate-hook` is a Rust `PreToolUse` hook for Claude Code and GitHub Copilot CLI (macOS, local CLI). It evaluates user-defined TOML rules against the raw hook payload to auto-allow, auto-deny or force an `ask` for tool calls, passing everything else through to the agent's normal permission flow, and it writes a JSONL audit log of every call (payload, matching rules, decision). Shell tool commands are parsed into segments (simple commands), each checked by command rules, with built-in floors that ask for anything that can't be checked statically.
+`tool-gate-hook` is a Rust `PreToolUse` hook for Claude Code and GitHub Copilot CLI (macOS, local CLI). It evaluates user-defined TOML rules against the raw hook payload to auto-allow, auto-deny or force an `ask` for tool calls, passing everything else through to the agent's normal permission flow, and it writes a JSONL audit log of every call (payload, matching rules, decision). Shell tool commands are parsed into segments (simple commands), each checked by command rules, with built-in floors that stop anything that can't be checked statically from being allowed.
 
 ## Build and Test Commands
 

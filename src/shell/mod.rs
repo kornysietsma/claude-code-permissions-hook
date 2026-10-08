@@ -201,7 +201,7 @@ impl ConstructKind {
         }
     }
 
-    /// Floors always force at least an `ask`
+    /// Floors turn an allow into an `ask`; construct rules can also ask or deny on them
     pub fn is_floor(self) -> bool {
         match self {
             ConstructKind::ParseError

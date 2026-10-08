@@ -272,17 +272,9 @@ fn compile_construct_rule(index: usize, table: toml::Table) -> Result<ConstructR
         bail!("{label}: a construct rule can only ask or deny, not allow");
     }
     let construct = match ConstructKind::from_name(&raw.construct) {
-        Some(kind) if kind.is_floor() => bail!(
-            "{label}: {} is a built-in check that always asks; it can't be configured",
-            raw.construct
-        ),
         Some(kind) => kind,
         None => {
-            let known: Vec<&str> = ConstructKind::ALL
-                .iter()
-                .filter(|kind| !kind.is_floor())
-                .map(|kind| kind.name())
-                .collect();
+            let known: Vec<&str> = ConstructKind::ALL.iter().map(|kind| kind.name()).collect();
             bail!(
                 "{label}: unknown construct \"{}\" (expected one of {})",
                 raw.construct,

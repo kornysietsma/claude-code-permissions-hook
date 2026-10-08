@@ -134,10 +134,16 @@ impl Evaluation {
     }
 }
 
-/// The first match with the most restrictive decision
-fn most_restrictive(matches: &[Match]) -> Option<usize> {
-    let decision = matches.iter().map(|m| m.decision).max()?;
-    matches.iter().position(|m| m.decision == decision)
+/// The first match with the most restrictive decision, among those `counts` accepts
+fn most_restrictive(matches: &[Match], counts: impl Fn(&Match) -> bool) -> Option<usize> {
+    let decision = matches
+        .iter()
+        .filter(|m| counts(m))
+        .map(|m| m.decision)
+        .max()?;
+    matches
+        .iter()
+        .position(|m| counts(m) && m.decision == decision)
 }
 
 impl Policy {
@@ -150,7 +156,7 @@ impl Policy {
             .collect();
         if call.tool_name != self.shell_tool.name {
             return Evaluation {
-                decided_by: most_restrictive(&matches),
+                decided_by: most_restrictive(&matches, |_| true),
                 matches,
                 shell: None,
             };
@@ -205,10 +211,16 @@ impl Policy {
             .peekable();
         let all_allowed = checked.peek().is_some()
             && checked.all(|(_, decision)| *decision == Some(Decision::Allow));
-        let decided_by = if matches.iter().any(|m| m.decision > Decision::Allow) {
-            most_restrictive(&matches)
+        // Floors only stop an allow: when a rule asks or denies, it decides, and what no rule
+        // allows passes through despite them
+        let is_rule = |m: &Match| m.kind != RuleKind::Floor;
+        let decided_by = if matches
+            .iter()
+            .any(|m| is_rule(m) && m.decision > Decision::Allow)
+        {
+            most_restrictive(&matches, is_rule)
         } else if all_allowed {
-            matches.iter().position(|m| m.decision == Decision::Allow)
+            most_restrictive(&matches, |_| true)
         } else {
             None
         };
@@ -378,7 +390,11 @@ impl ConstructRule {
         let context = match (&construct.target, segment) {
             (Some(target), _) => format!(" — \"{}\"", brief(target)),
             (None, Some(segment)) => format!(" — in \"{}\"", brief(&segment.source)),
-            (None, None) => String::new(),
+            (None, None) => construct
+                .detail
+                .as_ref()
+                .map(|detail| format!(" — {}", brief(detail)))
+                .unwrap_or_default(),
         };
         Match {
             kind: RuleKind::ConstructRule,
