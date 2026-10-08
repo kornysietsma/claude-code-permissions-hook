@@ -183,6 +183,7 @@ match."tool_input.file_path" = { under = ["{cwd}", "~/notes", "/tmp/mermaid"] }
 - The path is **resolved the way the OS would**: the longest existing prefix is canonicalised (following symlinks, applying `..`), and only the not-yet-existing remainder is cleaned up textually, so a `Write` to a new file works. A symlink inside an allowed directory that points outside it does not escape the check, and `/tmp/mermaid/../secret` is not under `/tmp/mermaid`.
 - Containment is by path component: `/tmp/mermaid2` is not under `/tmp/mermaid`.
 - The listed directories are canonicalised the same way (so `/tmp` and macOS's `/private/tmp` agree).
+- **This includes symlinks you made on purpose.** A listed directory that is itself a symlink works, since both sides resolve to its target. But a symlink *inside* it that points elsewhere isn't covered: if `~/.claude/skills` holds `likec4 -> ~/prompts/shared/skills/likec4`, a file read through it resolves to `~/prompts/shared/skills/likec4/…`, which isn't under `~/.claude/skills`. To include linked content, list the targets too: `under = ["~/.claude/skills", "~/prompts/shared/skills"]`. `find DIR -type l -exec ls -l {} +` shows the links. The same goes for `paths_under` and `outside`.
 
 Prefer `under` to a regex for path checks.
 

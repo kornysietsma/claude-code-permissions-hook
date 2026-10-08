@@ -1,0 +1,5 @@
+# Tombi (TOML linter/formatter) settings for this repo.
+# tool-gate-hook configs group rules by purpose, so [[rule]], [[command_rule]] and
+# [[construct_rule]] tables interleave on purpose; rule numbers are per kind.
+[lint.rules]
+tables-out-of-order = "off"

@@ -153,6 +153,7 @@ Every rule is evaluated; the final decision is **deny > ask > allow** regardless
 - **`command not found` in the agent**: use the absolute path to the binary (see Install).
 - **Every call asks with "config error"**: run `tool-gate-hook validate --agent claude` to see the error.
 - **A shell command asks or passes through unexpectedly**: `tool-gate-hook explain --agent claude 'THE COMMAND'` shows each command it found, which rules matched, and what asked.
+- **Your editor warns about tables out of order** (e.g. Tombi's `tables-out-of-order`): ignore it. Interleaving `[[rule]]`, `[[command_rule]]` and `[[construct_rule]]` is valid TOML, and rules are numbered per kind, so grouping by purpose changes nothing. For Tombi, turn the rule off in `~/.config/tombi/config.toml` (or a project `tombi.toml`): `[lint.rules]` then `tables-out-of-order = "off"`. A `#:tombi` comment in the file can only turn off all linting.
 - **A rule never matches**: `validate` warns when a field path doesn't start with a payload key known for the agent (for example `toolArgs.path` in a Claude config). Set `level = "all"` and `max_value_len = 0` in `[audit]` and look at the real payloads in the log.
 
 ## Status

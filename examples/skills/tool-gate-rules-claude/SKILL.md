@@ -138,6 +138,7 @@ match."agent_id" = { exists = true }
 - **Never write broad allows**: no `regex = '^.*'` or `''`, no bare `rm`, `curl`, `git push`, `sudo`, `ssh`, interpreters (`node`, `ruby`, `uv run`) or package installs without tight arguments. A command that can run arbitrary code is not "safe" because its name is.
 - File-changing commands (`rm`, `mv`, `cp`, `curl -o`) need `paths_under`.
 - **Never work around a floor** (no rewriting the user's command into `bash -c`, no allow rules on `eval`, `sh` or `xargs`). Explain it instead.
+- Before writing `under`, `paths_under` or `outside` for a directory, check it for symlinks (`find DIR -type l -exec ls -l {} +`). Paths resolve through symlinks, so content linked in from elsewhere isn't "under" the directory; list the link targets too, and tell the user why. A listed directory that is itself a symlink is fine.
 - Don't add variables like `PATH`, `GIT_PAGER`, `LD_PRELOAD` or `EDITOR` to `safe_env`: they change what later commands run.
 - `[[rule]]` can't allow `Bash`; that's a config error. Use `[[command_rule]]`.
 - Prefer a `reason` on deny rules that tells the model what to do instead.
@@ -145,7 +146,7 @@ match."agent_id" = { exists = true }
 
 ## Reference
 
-**Matchers** (all given must pass): `regex` (string or list, any matches), `not_regex` (none may match), `equals`, `glob`, `under` (list of directories; `~` and `{cwd}` work; resolves symlinks and `..`), `exists` (true/false).
+**Matchers** (all given must pass): `regex` (string or list, any matches), `not_regex` (none may match), `equals`, `glob`, `under` (list of directories; `~` and `{cwd}` work; resolves symlinks and `..`, so symlinks inside a directory that point elsewhere aren't under it), `exists` (true/false).
 
 **Segment fields for command rules:** use `text` (command and args, quotes removed, re-quoted only where needed: `git commit -m 'fix bug'`) or `name` (the command word, e.g. `git`, `./scripts/run.sh`). `env`, `timeout`, `nice`, `nohup` and `time` are unwrapped, so `timeout 60 cargo test` has the text `cargo test`.
 
