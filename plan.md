@@ -12,7 +12,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 - **Branch** `shell-parsing`, not pushed; the PR is raised at the end. `git log` shows a commit per step.
 - **Done:** steps 1 to 10. The feature is complete and documented: parsing, segments, command rules, `paths_under`, `cd` tracking, construct rules, all floors, `[shell] safe_env`, wrappers, the audit `shell` object, `explain`, `validate`, the examples, the configuration guide (with a worked Mermaid diagram and tables of contents), README, AGENTS.md and the two rule-writing skills.
-- **Next:** step 11, migrating the author's live config and dogfooding.
+- **Next:** step 11 dogfooding. The live config is migrated (old one at `~/.config/tool-gate-hook/claude.toml.pre-shell-parsing`) and the new binary installed on 2026-10-08, with `max_value_len = 0` for replayable logs; the "Working on this branch" cautions below no longer apply.
 - **Deferred (the author, later):** try the Claude skill with a cheap model: in a scratch project, install `examples/skills/tool-gate-rules-claude`, ask Haiku to (a) allow `npm run lint` and (b) turn a real audit record into a rule; check the rules are narrow and that it used `explain`.
 
 ## Working on this branch
@@ -36,7 +36,7 @@ These hold regardless:
 
 - [x] Rewrite `~/.config/tool-gate-hook/claude.toml` in the new format (there is no live Copilot config on this machine; Copilot runs on a work machine, see `docs/copilot-verification.md`), using `examples/claude.toml` as the model: Bash allows become `[[command_rule]]`s on `text` (file-touching ones with `paths_under`), `shell_chain` / `parent_dir` patterns and `not_regex` safety nets go, `legacy_python` becomes a deny on `name`, and add the construct rules, the harmless-builtins allow and `[shell] safe_env`. Show the author the new config before writing it; `validate` it.
 - [x] Replay the corpus: for each Bash call in the live audit log (`~/.local/share/tool-gate-hook/claude.jsonl`), compare the old `decision` with the new config's `explain` decision. Review every change, especially new allows, with the author. See [Corpus tools](#corpus-tools).
-- [ ] `cargo install --path .`, then use Claude Code for a session with `level = "all"`. Review the audit log for surprising floors or allows. After this, the "Working on this branch" cautions about the old binary no longer apply.
+- [ ] (installed 2026-10-08; dogfooding pending) `cargo install --path .`, then use Claude Code for a session with `level = "all"`. Review the audit log for surprising floors or allows. After this, the "Working on this branch" cautions about the old binary no longer apply.
 - [ ] Copilot: run the relevant parts of `docs/copilot-verification.md` (its script already uses command rules) with a compound command, e.g. `echo tgh-allow && echo tgh-allow`; fold the results back into fixtures and `docs/copilot-tool-inputs.md`.
 - [ ] Remove the `legacy_python` heredoc caveat from AGENTS.md ("Project knowledge").
 - [ ] Fold anything in `spec.md` not yet in the docs or AGENTS.md into them, then remove `spec.md` and `plan.md` (as was done after the last rework). Most of the spec is already in `docs/configuration-guide.md` and AGENTS.md; check especially the design rationale (why floors exist, why a `cd` never removes a directory, why rule indexes are per kind).
